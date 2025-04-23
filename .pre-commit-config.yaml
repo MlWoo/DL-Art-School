@@ -1,0 +1,54 @@
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.4.2
+    hooks:
+      - id: black
+        args: [--line-length=120]
+
+  - repo: https://github.com/PyCQA/flake8
+    rev: 7.1.0
+    hooks:
+      - id: flake8
+        args: [ '--config=.flake8', '--ignore=E203,W503' ]
+
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: [--profile=black, --line-length=120]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-executables-have-shebangs
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+      - id: trailing-whitespace
+
+  - repo: local
+    hooks:
+    # - id: flake8-interface
+    #   name: flake8 on interface package
+    #   language: system
+    #   entry: bash -c 'cd interface && flake8 --max-line-length=120'
+    #   pass_filenames: false
+    #   always_run: true
+    - id: pyright-interface
+      name: pyright on interface package
+      language: system
+      entry: scripts/run_ci_when_installed.sh interface 'cd interface && pyright'
+      pass_filenames: false
+      always_run: true
+
+    # - id: flake8-script
+    #   name: flake8 on interface package
+    #   language: system
+    #   entry: bash -c 'cd interface && flake8 --max-line-length=120'
+    #   pass_filenames: false
+    #   always_run: true
+    - id: pyright-script
+      name: pyright on interface package
+      language: system
+      entry: scripts/run_ci_when_installed.sh interface 'cd script && pyright'
+      pass_filenames: false
+      always_run: true
