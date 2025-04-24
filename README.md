@@ -1,6 +1,6 @@
 # Deep Learning Art School (Audio)
 
-The reposity is developed by [MlWoo](https://github.com/Mlwoo) based on the [DLAS](https://github.com/neonbjb/DL-Art-School) project and the [WeNet](https://github.com/wenet-e2e/wenet) project.
+The repository is developed by [MlWoo](https://github.com/Mlwoo) based on the [DLAS](https://github.com/neonbjb/DL-Art-School) project and the [WeNet](https://github.com/wenet-e2e/wenet) project.
 
 The repository is used to train the audio model and much more clean and organized.
 
@@ -9,6 +9,9 @@ The repository is used to train the audio model and much more clean and organize
 ### Dataset
 
 - [x] Support huggingface dataset. (support-only)
+- [x] Support audio-text huggingface dataset(ASR, TTS, etc.).
+- [x] Support audio-only sample-level huggingface dataset(for SSL, like Best-RQ).
+- [ ] Support audio-only segment-level huggingface dataset(for audio reconstruction, like vocoder, vq-vae, etc.).
 
 ### Training acceleration
 
@@ -22,8 +25,8 @@ The repository is used to train the audio model and much more clean and organize
 
 ### Data sampler
 
-- [x] Support fixed batch size training, dynamic batch size training, bucketed batch size training(using torch compilation bacause of limited buckets).
-- [x] Support auto-select the maximal batch size if using bucketed batch size.
+- [x] Support fixed batch size training, dynamic batch size training, bucketed batch size training(for torch compilation because of limited buckets amount).
+- [x] Support auto-selection of the maximal batch size for bucketed sampler.
 
 ### GPU memory (in avoid of OOM)
 
@@ -57,39 +60,39 @@ The repository is used to train the audio model and much more clean and organize
 
 Send your Pytorch model to art class!
 
-This repository is both a framework and a set of tools for training deep neural networks that create images. It started 
-as a branch of the [open-mmlab](https://github.com/open-mmlab) project developed by [Multimedia Laboratory, CUHK](http://mmlab.ie.cuhk.edu.hk) 
+This repository is both a framework and a set of tools for training deep neural networks that create images. It started
+as a branch of the [open-mmlab](https://github.com/open-mmlab) project developed by [Multimedia Laboratory, CUHK](http://mmlab.ie.cuhk.edu.hk)
 but has been almost completely re-written at every level.
 
 ## Why do we need another training framework
 
-These are a dime a dozen, no doubt. DL Art School (*DLAS*) differentiates itself by being configuration driven. You write 
-the model code (specifically, a torch.nn.Module) and (possibly) some losses, then you cobble together a config file written 
-in yaml that tells DLAS how to train it. Swapping model architectures and tuning hyper-parameters is simple and often 
-requires no changes to actual code. You also don't need to remember complex command line incantations. This effectively 
-enables you to run multiple concurrent experiments that use the same codebase, as well as retain backwards compatibility 
+These are a dime a dozen, no doubt. DL Art School (*DLAS*) differentiates itself by being configuration driven. You write
+the model code (specifically, a torch.nn.Module) and (possibly) some losses, then you cobble together a config file written
+in yaml that tells DLAS how to train it. Swapping model architectures and tuning hyper-parameters is simple and often
+requires no changes to actual code. You also don't need to remember complex command line incantations. This effectively
+enables you to run multiple concurrent experiments that use the same codebase, as well as retain backwards compatibility
 for past experiments.
 
-Training effective generators often means juggling multiple loss functions. As a result, DLAS' configuration language is 
-specifically designed to make it easy to support large number of losses and networks that interact with each other. As an 
-example: some GANs I have trained in this framework consist of more than 15 losses and use 2 separate discriminators and 
+Training effective generators often means juggling multiple loss functions. As a result, DLAS' configuration language is
+specifically designed to make it easy to support large number of losses and networks that interact with each other. As an
+example: some GANs I have trained in this framework consist of more than 15 losses and use 2 separate discriminators and
 require no bespoke code.
 
-Generators are also notorious GPU memory hogs. I have spent substantial time streamlining the training framework to support 
-gradient checkpointing and FP16. DLAS also supports "mega batching", where multiple forward passes contribute to a single 
+Generators are also notorious GPU memory hogs. I have spent substantial time streamlining the training framework to support
+gradient checkpointing and FP16. DLAS also supports "mega batching", where multiple forward passes contribute to a single
 backward pass. Most models can be trained on midrange GPUs with 8-11GB of memory.
 
-The final value-added feature is interpretability. Tensorboard logging operates out of the box with no custom code. 
-Intermediate images from within the training pipeline can be intermittently surfaced as normal PNG files so you can 
-see what your network is up to. Validation passes are also cached as images so you can view how your network improves 
+The final value-added feature is interpretability. Tensorboard logging operates out of the box with no custom code.
+Intermediate images from within the training pipeline can be intermittently surfaced as normal PNG files so you can
+see what your network is up to. Validation passes are also cached as images so you can view how your network improves
 over time.
 
 ## Modeling Capabilities
 
-DLAS was built with extensibility in mind. One of the reasons I'm putting in the effort to better document this code is the 
+DLAS was built with extensibility in mind. One of the reasons I'm putting in the effort to better document this code is the
 incredible ease with which I have been able to train entirely new model types with no changes to the core training code.
 
-I intend to fill out the sections below with sample configurations which can be used to train different architectures. 
+I intend to fill out the sections below with sample configurations which can be used to train different architectures.
 You will need to bring your own data.
 
 ### Super-resolution

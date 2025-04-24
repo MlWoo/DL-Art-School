@@ -76,7 +76,6 @@ class BestRqFramework(BaseModule):
                 *args,
                 **kwargs,
             )
-
         else:
             encoder_additional_parameters = {"input_dim": input_dim, "chunk_len": chunk_len}
             self.encoder = construct_from_kwargs(encoder, additional_parameters=encoder_additional_parameters)

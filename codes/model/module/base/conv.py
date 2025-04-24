@@ -3,7 +3,6 @@ from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from torch.nn import ModuleList
 
 from .activation import ACT2FN
 from .dropout import Dropout
@@ -146,7 +145,7 @@ class Conv1DBlock(nn.Module):
                 padding = int((kernel_size * dilation) // 2)
             else:
                 padding = int((kernel_size * dilation - dilation) // 2)
-        self.op_list = ModuleList()
+        self.op_list = nn.ModuleList()
         assert "conv" in ops_seq or "id" in ops_seq, f"Conv1DBlock should have conv or id ops but got {ops_seq}"
         self.channel_last = channel_last
         last_op_replace = False
@@ -266,7 +265,6 @@ class Conv1DK1Block(Conv1DBlock):
         ops_seq: Tuple[str, ...] = ("conv",),
         bias: bool = True,
         spectral_norm: bool = False,
-        init_cfg=None,
     ):
         super().__init__(
             n_in,
@@ -277,7 +275,6 @@ class Conv1DK1Block(Conv1DBlock):
             ops_seq=ops_seq,
             bias=bias,
             spectral_norm=spectral_norm,
-            init_cfg=init_cfg,
         )
 
     def forward(self, x: Tensor, x_mask: Optional[Tensor] = None) -> Tensor:

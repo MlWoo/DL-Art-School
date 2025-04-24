@@ -2,7 +2,6 @@ from typing import List, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
-from torch.nn import ModuleList
 
 from .activation import ACT2FN
 from .dropout import Dropout
@@ -62,7 +61,7 @@ class LinearBlock(nn.Module):
         norm_groups: int = 0,
     ):
         super().__init__()
-        self.op_list = ModuleList()
+        self.op_list = nn.ModuleList()
         assert "linear" in ops_seq or "id" in ops_seq, f"LinearBlock should have linear ops but got {ops_seq}"
         self.channel_last = channel_last
         last_op_replace = False
@@ -74,7 +73,6 @@ class LinearBlock(nn.Module):
                     op = nn.Linear(in_features, out_features, bias=bias)
                 else:
                     op = nn.Conv1d(in_channels=in_features, out_channels=out_features, kernel_size=1, bias=bias)
-                # op = Linear(in_features, out_features, bias, channel_last=channel_last, spectral_norm=spectral_norm)
                 norm_features = out_features
                 op_name = "id"
             elif op_name == "bn":
