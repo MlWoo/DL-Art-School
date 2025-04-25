@@ -42,7 +42,7 @@ The repository is used to train the audio model and much more clean and organize
 ### Models
 
 - [x] [Audio] Best-RQ
-- [ ] [Audio] Cosyvoice2(DPO)
+- [x] [Audio] Cosyvoice2(DPO) TBC
 - [ ] [Audio] WaveVAE
 - [ ] [Audio] USM
 - [ ] [Audio] VQ-VAE

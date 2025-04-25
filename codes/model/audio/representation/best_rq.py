@@ -8,6 +8,7 @@ from einops import rearrange
 from model.audio.module.usm_encoder import USMSpeechEncoder
 from model.base import BaseModule
 from model.module.base.mask import sequence_mask
+from model.util.ops import safe_stack
 from model.vqvae.quantizers import RandomProjectionQuantizer
 from torch import Tensor, nn
 from torch.nn import functional as F
@@ -277,11 +278,9 @@ class BestRqFramework(BaseModule):
         if self.debug_info is not None:
             self.debug_info["input_size"] = input_values.shape[0] * input_values.shape[1]
             self.debug_info["input_length"] = input_values.shape[1]
-            self.debug_info["attn"] = torch.stack([attn for attn in encoder_out.attentions if attn is not None], dim=1)
+            self.debug_info["attn"] = safe_stack(encoder_out.attentions, dim=1)
             self.debug_info["reduced_lengths"] = input_lengths.detach() // self.reduction_factors
-            self.debug_info["score_mask"] = torch.stack(
-                [mask for mask in encoder_out.score_mask if mask is not None], dim=1
-            )
+            self.debug_info["score_mask"] = safe_stack(encoder_out.score_mask, dim=1)
 
         return pred_labels, losses
 
