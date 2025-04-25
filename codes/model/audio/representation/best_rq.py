@@ -14,9 +14,7 @@ from torch.nn import functional as F
 from trainer.networks import register_model
 from trainer.util import set_requires_grad
 from utils.checkpoint import load_checkpoint
-from utils.multimedia import LogImages
 from utils.options import opt_get
-from utils.plot import plot_images
 from utils.registry import construct_from_kwargs
 
 
@@ -104,12 +102,9 @@ class BestRqFramework(BaseModule):
         self.mask_prob = mask_prob
         self.chunk_len = chunk_len
 
-    def get_annotation(self, inputs_dict, indice):
-        return None
-
     def visual_cfg(self):
         plot_cfg = dict(
-            token_attn=dict(
+            input_values=dict(
                 tensor_keys=[
                     "input_values",
                 ],
@@ -127,42 +122,38 @@ class BestRqFramework(BaseModule):
                 width=4,
                 height=4,
             ),
+            token_attn=dict(
+                tensor_keys=[
+                    "attn",
+                ],
+                shapes_keys=[
+                    ("input_lengths", "input_lengths"),
+                ],
+                t_labels=["head"],
+                l_labels=["layers"],
+                visual_methods=["show"],
+                color_info=[None],
+                align_direction="h",
+                width=4,
+                height=4,
+            ),
+            score_mask=dict(
+                tensor_keys=[
+                    "score_mask",
+                ],
+                shapes_keys=[
+                    ("input_lengths", "input_lengths"),
+                ],
+                t_labels=["head"],
+                l_labels=["layers"],
+                visual_methods=["show"],
+                color_info=[None],
+                align_direction="h",
+                width=4,
+                height=4,
+            ),
         )
         return plot_cfg
-
-    @torch.no_grad()
-    def visual_dbg(self, it, model_vdbg_dir):
-        num_split = 1
-        logger = LogImages(model_vdbg_dir, "", persistent=["file"])
-        indice = list(range(self.num_visual_debug))
-        images_dict = dict()
-        plot_cfg = self.visual_cfg()
-        if plot_cfg is not None:
-            annotation = None  # self.get_annotation(self.inputs_dict, indice)
-            for cfg_k, cfg_v in plot_cfg.items():
-                images = plot_images(
-                    self.debug_info,
-                    tensor_keys=cfg_v["tensor_keys"],
-                    visual_methods=cfg_v["visual_methods"],
-                    color_info=cfg_v.get("color_info", None),
-                    y_lim_info=cfg_v.get("y_lim_info", None),
-                    y_pos_info=cfg_v.get("y_pos_info", None),
-                    indice=indice,
-                    titles=cfg_v.get("titles", None),
-                    t_labels=cfg_v.get("t_labels", None),
-                    l_labels=cfg_v.get("l_labels", None),
-                    shapes_keys=cfg_v.get("shapes_keys", None),
-                    texts=annotation,
-                    split_text=True,
-                    num_split=num_split,
-                    width=cfg_v.get("width", 10),
-                    height=cfg_v.get("height", 4),
-                    align_direction=cfg_v.get("align_direction", "v"),
-                    colorbar=True,
-                )
-                if images is not None:
-                    images_dict["image_" + cfg_k] = images
-        logger.process(it, images_dict, mode="")
 
     def masking(self, input_values: Tensor, input_lengths: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """
@@ -273,8 +264,8 @@ class BestRqFramework(BaseModule):
 
             del masked_target_values
 
-        enc_out = self.encoder(masked_input_values, input_lengths=recover_input_lengths)
-        last_hidden_state = enc_out.last_hidden_state
+        encoder_out = self.encoder(masked_input_values, input_lengths=recover_input_lengths, num_attn=1)
+        last_hidden_state = encoder_out.last_hidden_state
         targets = last_hidden_state[time_mask_indices].contiguous()
 
         losses = 0.0
@@ -286,6 +277,10 @@ class BestRqFramework(BaseModule):
         if self.debug_info is not None:
             self.debug_info["input_size"] = input_values.shape[0] * input_values.shape[1]
             self.debug_info["input_length"] = input_values.shape[1]
+            self.debug_info["attn"] = torch.stack([attn for attn in encoder_out.attentions if attn is not None], dim=1)
+            self.debug_info["score_mask"] = torch.stack(
+                [mask for mask in encoder_out.score_mask if mask is not None], dim=1
+            )
 
         return pred_labels, losses
 
@@ -520,10 +515,6 @@ class BestRqCTC(BestRqFramework):
         return loss, logits
 
     def forward(self, input_values, input_lengths, labels):
-        if self.check_pretrain:
-            import pdb
-
-            pdb.set_trace()
         if self.training:
             loss, _ = self.forward_body(input_values, input_lengths, labels)
             return loss

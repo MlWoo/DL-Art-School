@@ -62,19 +62,19 @@ def create_batch_segmented_attention_mask(input_ids, eos_token_id=5000):
     return causal_mask & same_segment
 
 
-def get_inner_attn_mask(mask, q_l, kv_l, device, sample, sample_t, offset_t=None):
+def get_inner_score_mask(mask, q_l, kv_l, device, sample, sample_t, offset_t=None):
     # returns a mask of shape 1 x 1 x q_l x kv_l or None if masking is not needed.
     if mask is None or q_l == 1:
         return None
     else:
+        if kv_l is None:
+            kv_l = q_l
         if offset_t is None:
             offset = sample_t - q_l if sample else max(kv_l - q_l, 0)
         else:
             offset = offset_t
-        ones = torch.ones(q_l, kv_l)
-        if device >= 0:
-            ones = ones.to(device)
-        if mask == "autoregressive":
+        ones = torch.ones(q_l, kv_l, device=device)
+        if mask in ["autoregressive", "ar"]:
             # Masked dense
             mask = ones.tril(offset)
         elif mask == "window":
@@ -87,7 +87,7 @@ def get_inner_attn_mask(mask, q_l, kv_l, device, sample, sample_t, offset_t=None
         return mask.view(1, 1, q_l, kv_l).bool()
 
 
-def get_outter_attn_mask(
+def get_outter_score_mask(
     mask: Optional[Tensor] = None, q_mask: Optional[Tensor] = None, kv_mask: Optional[Tensor] = None
 ):
     # mask: B, C, T_q, T_kv
@@ -111,6 +111,20 @@ def get_outter_attn_mask(
             mask = torch.logical_and(q_mask_ex, kv_mask_ex)
 
         return mask
+
+
+def get_chunks_ceil_score_mask(seq_l, chunk_size, device, return_folded=False):
+    chunks = (seq_l - 1) // chunk_size + 1
+    seq_l_ceil = chunks * chunk_size
+    x_ceil_mask = torch.zeros(seq_l_ceil, seq_l_ceil, device=device, dtype=torch.bool)
+    chunk_score_mask = x_ceil_mask.reshape(chunks, chunk_size, chunks, chunk_size)
+    chunk_score_mask = chunk_score_mask.permute(0, 2, 1, 3).reshape(-1, chunk_size, chunk_size)
+    chunk_score_mask[0 :: (chunks + 1)] = True
+    if not return_folded:
+        chunk_score_mask = chunk_score_mask.reshape(chunks, chunks, chunk_size, chunk_size)
+        chunk_score_mask = chunk_score_mask.permute(0, 2, 1, 3).reshape(seq_l_ceil, seq_l_ceil)
+
+    return chunk_score_mask, chunks
 
 
 def pad_list(xs, pad_value=0.0):

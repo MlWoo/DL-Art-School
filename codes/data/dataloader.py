@@ -204,6 +204,9 @@ class GeneralDataloader(DataLoader):
     def set_epoch(self, epoch):
         self.sampler.set_epoch(epoch)
 
+    def __len__(self):
+        return self.sampler.num_batch
+
     def __iter__(self):
         self.outer_iterator: Iterable = super().__iter__()
         self.inner_iterator: Iterable = self.__inner_iter__()
@@ -396,6 +399,17 @@ class GeneralSeqDataloader:
             if sampler_opt is None
             else sampler_opt.get("partition_record_path", None)
         )
+        bucket_max_batch_tokens = (
+            kwargs.get("bucket_max_batch_tokens", 16384)
+            if sampler_opt is None
+            else sampler_opt.get("bucket_max_batch_tokens", 16384)
+        )
+        bucket_min_samples = (
+            kwargs.get("bucket_min_samples", 1) if sampler_opt is None else sampler_opt.get("bucket_min_samples", 1)
+        )
+        bucket_max_samples = (
+            kwargs.get("bucket_max_samples", 64) if sampler_opt is None else sampler_opt.get("bucket_max_samples", 64)
+        )
 
         for phase, map_dataset_indice in dataset.phases_indice_dict.items():
             if phase == "train":
@@ -436,6 +450,9 @@ class GeneralSeqDataloader:
                 max_tokens=max_tokens,
                 max_samples=max_samples,
                 partition_record_path=partition_record_path,
+                bucket_max_batch_tokens=bucket_max_batch_tokens,
+                bucket_min_samples=bucket_min_samples,
+                bucket_max_samples=bucket_max_samples,
             )
             sampler.finalize_dataset(dataset=dataset, indices=map_dataset_indice, verbose=True)
             if sampler.batch_mode == "bucketed":
@@ -484,7 +501,7 @@ class GeneralSeqDataloader:
                     dataloader,
                     collate_fn,
                     process_device,
-                    predefine_len=batch_mode != "dynamical",
+                    predefine_len=batch_mode == "fixed",
                 )
                 if buffer_background
                 else dataloader

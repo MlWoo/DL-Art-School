@@ -8,16 +8,6 @@ import torch.nn.functional as F
 import torch.nn.init as init
 from utils.checkpoint import checkpoint
 
-Tensor = torch.Tensor
-
-
-def exists(val):
-    return val is not None
-
-
-def default(val, d):
-    return val if exists(val) else d
-
 
 def l2norm(t):
     return F.normalize(t, p=2, dim=-1)

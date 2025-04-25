@@ -1,19 +1,19 @@
 import math
 from abc import ABCMeta
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from utils import logging
+from utils.logging_utils import get_root_logger
 
 from .dropout import Dropout
 from .linear import Linear
-from .mask import get_inner_attn_mask
+from .mask import get_inner_score_mask
 from .positional_embedding import RelativePositionalEmbedding
 from .positional_encoding import RelativePositionalEncoding
 
-logger = logging.getLogger("base")
+logger = get_root_logger()
 
 EPSILON = 1e-6
 
@@ -182,7 +182,7 @@ class MultiHeadAttn(nn.Module):
         scale: Optional[float] = None,
         attn_dropout_p: float = 0.1,
         cxt_dropout_p: float = 0.1,
-        attn_func_type: int = 0,
+        attn_func_type: Union[int, str] = 0,
         channel_last: bool = True,
         spectral_norm: bool = False,
         window_size: int = 5,
@@ -194,20 +194,36 @@ class MultiHeadAttn(nn.Module):
         0 : self attention, production attention, no mask
         1 : self attention, production attention, triangle mask
         2 : self attention, production attention, window mask
-        3 : mutual attention, production attention, no mask
-        4 : mutual attention, production attention, triangle mask
-        5 : mutual attention, production attention, window mask
+        3 : self attention, production attention, window mask
+        4 : self attention with rotary embedding, production attention, no mask
+        5 : self attention with rotary embedding, production attention, triangle mask
+        6 : self attention with rotary embedding, production attention, window mask
+        7 : self attention with rotary embedding, production attention, window mask
+        8 : cross attention, production attention, no mask
+        9 : cross attention, production attention, triangle mask
+        10 : cross attention, production attention, window mask
+        11 : cross attention, production attention, window mask
         """
-        attn_func_map = {
-            0: (self._individual_qkv, self._scaled_dot_scores, None),
-            1: (self._individual_qkv, self._scaled_dot_scores, "autoregressive"),
-            2: (self._individual_qkv, self._scaled_dot_scores, "window"),
-            3: (self._individual_qkv, self._scaled_dot_scores, "window_ar"),
-            4: (self._mutual_qkv, self._scaled_dot_scores, None),
-            5: (self._mutual_qkv, self._scaled_dot_scores, "autoregressive"),
-            6: (self._mutual_qkv, self._scaled_dot_scores, "window"),
-            7: (self._mutual_qkv, self._scaled_dot_scores, "window_ar"),
+        attn_func_map_by_id = {
+            0: (self._individual_qkv, self._scaled_dot_scores, None, "self_attn_base"),
+            1: (self._individual_qkv, self._scaled_dot_scores, "autoregressive", "self_attn_ar"),
+            2: (self._individual_qkv, self._scaled_dot_scores, "window", "self_attn_window"),
+            3: (self._individual_qkv, self._scaled_dot_scores, "window_ar", "self_attn_window_ar"),
+            4: (self._individual_rope_qkv, self._scaled_dot_scores, None, "self_attn_rope_base"),
+            5: (self._individual_rope_qkv, self._scaled_dot_scores, "autoregressive", "self_attn_rope_ar"),
+            6: (self._individual_rope_qkv, self._scaled_dot_scores, "window", "self_attn_rope_window"),
+            7: (self._individual_rope_qkv, self._scaled_dot_scores, "window_ar", "self_attn_rope_window_ar"),
+            8: (self._mutual_qkv, self._scaled_dot_scores, None, "cross_attn_base"),
+            9: (self._mutual_qkv, self._scaled_dot_scores, "autoregressive", "cross_attn_ar"),
+            10: (self._mutual_qkv, self._scaled_dot_scores, "window", "cross_attn_window"),
+            11: (self._mutual_qkv, self._scaled_dot_scores, "window_ar", "cross_attn_window_ar"),
         }
+        attn_func_map_by_name = {}
+        for k, v in attn_func_map_by_id.items():
+            qkv_func, scores_func, scores_mask_type, attn_type = v
+            attn_func_map_by_name[attn_type] = (qkv_func, scores_func, scores_mask_type, k)
+        if isinstance(attn_func_type, str):
+            attn_func_type = attn_func_map_by_name[attn_func_type][3]
         super().__init__()
         assert in_size % num_heads == 0, " [!] channels should be divisible by num_heads."
         # class attributes
@@ -220,11 +236,14 @@ class MultiHeadAttn(nn.Module):
         self.num_heads = num_heads
         n_state = num_heads * head_size
         self.n_state = n_state
-        if attn_func_type > 3:
+        if attn_func_type > 7:
             if kv_size is None:
                 kv_size = in_size
             self.inner_proj_q = Linear(in_size, n_state, channel_last=channel_last, spectral_norm=spectral_norm)
             self.inner_proj_kv = Linear(kv_size, n_state * 2, channel_last=channel_last, spectral_norm=spectral_norm)
+        elif attn_func_type > 3:
+            self.inner_proj_qk = Linear(in_size, n_state * 2, channel_last=channel_last, spectral_norm=spectral_norm)
+            self.inner_proj_v = Linear(in_size, n_state, channel_last=channel_last, spectral_norm=spectral_norm)
         else:
             self.inner_proj_qkv = Linear(in_size, n_state * 3, channel_last=channel_last, spectral_norm=spectral_norm)
         self.attn_func_type = attn_func_type
@@ -240,7 +259,7 @@ class MultiHeadAttn(nn.Module):
         self.attn_dropout = Dropout(attn_dropout_p, inplace=False) if attn_dropout_p > 0.0 else lambda x: x
         self.cxt_dropout = Dropout(cxt_dropout_p, inplace=True) if cxt_dropout_p > 0.0 else lambda x: x
         self.attn_dropout_p = attn_dropout_p
-        self.qkv, self.scores, self.scores_mask = attn_func_map[attn_func_type]
+        self.qkv, self.scores, self.scores_mask, self.attn_type = attn_func_map_by_id[attn_func_type]
         self.mask_score = self.scores_mask is not None
         self.window_size = window_size
 
@@ -250,34 +269,21 @@ class MultiHeadAttn(nn.Module):
         self.score_mask_value = float("-inf")
         self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
 
-    def reset_parameters_old(self):
-        if self.attn_func_type > 2:
-            nn.init.xavier_uniform_(self.inner_proj_kv.op.weight[: self.n_state, :])
-            nn.init.xavier_uniform_(self.inner_proj_kv.op.weight[self.n_state :, :])
-            nn.init.xavier_uniform_(self.inner_proj_q.op.weight)
-            nn.init.constant_(self.inner_proj_kv.op.bias, 0.0)
-            nn.init.constant_(self.inner_proj_q.op.bias, 0.0)
-        else:
-            # in proj
-            nn.init.xavier_uniform_(self.inner_proj_qkv.op.weight[: self.n_state, :], gain=1 / math.sqrt(2))
-            nn.init.xavier_uniform_(
-                self.inner_proj_qkv.op.weight[self.n_state : (self.n_state * 2), :], gain=1 / math.sqrt(2)
-            )
-            nn.init.xavier_uniform_(self.inner_proj_qkv.op.weight[(self.n_state * 2) :, :], gain=1 / math.sqrt(2))
-            nn.init.constant_(self.inner_proj_qkv.op.bias, 0.0)
-        nn.init.xavier_uniform_(self.proj.op.weight)
-        nn.init.constant_(self.proj.op.bias, 0.0)
-
     def reset_parameters(self):
-        if self.attn_func_type > 3:
+        if self.attn_func_type > 7:
             nn.init.kaiming_uniform_(self.inner_proj_kv.op.weight[: self.n_state, :], a=math.sqrt(5))
             nn.init.kaiming_uniform_(self.inner_proj_kv.op.weight[self.n_state :, :], a=math.sqrt(5))
             nn.init.kaiming_uniform_(self.inner_proj_q.op.weight, a=math.sqrt(5))
             bound = 1.0 / math.sqrt(self.n_state)
             nn.init.uniform_(self.inner_proj_kv.op.bias, -bound, bound)
             nn.init.uniform_(self.inner_proj_q.op.bias, -bound, bound)
+        elif self.attn_func_type > 3:
+            nn.init.kaiming_uniform_(self.inner_proj_qk.op.weight[: self.n_state, :], a=math.sqrt(5))
+            nn.init.kaiming_uniform_(self.inner_proj_qk.op.weight[self.n_state :, :], a=math.sqrt(5))
+            nn.init.kaiming_uniform_(self.inner_proj_v.op.weight, a=math.sqrt(5))
+            nn.init.uniform_(self.inner_proj_qk.op.bias, -bound, bound)
+            nn.init.uniform_(self.inner_proj_v.op.bias, -bound, bound)
         else:
-            # in proj
             nn.init.kaiming_uniform_(self.inner_proj_qkv.op.weight[: self.n_state, :], a=math.sqrt(5))
             nn.init.kaiming_uniform_(
                 self.inner_proj_qkv.op.weight[self.n_state : (self.n_state * 2), :], a=math.sqrt(5)
@@ -345,6 +351,16 @@ class MultiHeadAttn(nn.Module):
             query, key, value = torch.split(qkv, self.n_state, dim=1)
         return query, key, value
 
+    def _individual_rope_qkv(self, x: Tensor, enc_kv: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
+        # enc_kv is the query applied with rotary embedding
+        qk = self.inner_proj_qk(enc_kv)
+        if self.channel_last:
+            query, key = torch.split(qk, self.n_state, dim=-1)
+        else:
+            query, key = torch.split(qk, self.n_state, dim=1)
+        value = self.inner_proj_v(x)
+        return query, key, value
+
     def _mutual_qkv(self, x: Tensor, enc_kv: Optional[Tensor] = None) -> Tuple[Tensor, Tensor, Tensor]:
         assert enc_kv is not None
         query = self.inner_proj_q(x)
@@ -355,25 +371,34 @@ class MultiHeadAttn(nn.Module):
             key, value = torch.split(kv, self.n_state, dim=1)
         return query, key, value
 
-    def get_scores(self, x, enc_kv=None, sample=False):
-        query, key, value = self.qkv(x, enc_kv=enc_kv)
+    def get_scores(self, x, enc_kv=None, sample=False, pos_info=None):
+        if pos_info is not None:
+            qk = self._apply_rotary_embedding(x, pos_info)
+            query, key, value = self.qkv(x, enc_kv=qk)
+        else:
+            query, key, value = self.qkv(x, enc_kv=enc_kv)
         query = self._split_heads(query)
         key = self._split_heads(key, k=True)
         value = self._split_heads(value)
         scores = self.scores(query, key)
         return scores, query, key, value, sample
 
-    def get_qkv(self, x, enc_kv=None, sample=False):
-        query, key, value = self.qkv(x, enc_kv=enc_kv)
+    def get_qkv(self, x, enc_kv=None, sample=False, pos_info=None):
+        if pos_info is not None:
+            qk = self._apply_rotary_embedding(x, pos_info)
+            query, key, value = self.qkv(x, enc_kv=qk)
+        else:
+            query, key, value = self.qkv(x, enc_kv=enc_kv)
         query = self._split_heads(query)
         key = self._split_heads(key, k=False)
         value = self._split_heads(value)
+
         return None, query, key, value, sample
 
     def get_attn(self, scores, mask=None):
         if mask is not None:
             # mask = mask.expand_as(scores)
-            scores = scores.masked_fill(mask == 0, self.score_mask_value)
+            scores = scores.masked_fill(~mask, self.score_mask_value)
         # score_type = scores.dtype
         # scores = scores.float()
         weight = F.softmax(scores, dim=-1)  # .type(score_type)
@@ -386,64 +411,107 @@ class MultiHeadAttn(nn.Module):
         context = self._merge_heads(context)
         return context
 
-    def forward(self, x, enc_kv=None, attn_mask=None, sample=False, return_attn=False, pos_info=None):
-        if self.flash:
-            _, query, key, value, sample = self.get_qkv(x, enc_kv=enc_kv, sample=sample)
+    def get_mask(
+        self,
+        device,
+        q_l,
+        kv_l=None,
+        score_mask=None,
+        outter_score_mask=None,
+        sample=False,
+    ):
+        if score_mask is None:
             with torch.no_grad():
-                inner_attn_mask = get_inner_attn_mask(
+                inner_score_mask = get_inner_score_mask(
                     self.scores_mask,
-                    query.size(-2),
-                    key.size(-2),
-                    x.get_device(),
+                    q_l,
+                    kv_l,
+                    device,
                     sample,
                     self.sample_t,
                     self.window_size,
                 )
-                if attn_mask is not None and inner_attn_mask is not None:
-                    scores_mask = torch.logical_and(inner_attn_mask, attn_mask)
-                elif inner_attn_mask is not None:
-                    scores_mask = inner_attn_mask
-                elif attn_mask is not None:
-                    scores_mask = attn_mask
+                if outter_score_mask is not None and inner_score_mask is not None:
+                    score_mask = torch.logical_and(inner_score_mask, outter_score_mask)
+                elif inner_score_mask is not None:
+                    score_mask = inner_score_mask
+                elif outter_score_mask is not None:
+                    score_mask = outter_score_mask
                 else:
-                    scores_mask = None
-            attn = None
+                    score_mask = None
+
+        return score_mask
+
+    def get_attn_context(self, score, value, score_mask=None):
+        attn = self.get_attn(score, mask=score_mask)
+        context = self.get_context(attn, value)
+        return context, attn
+
+    def post_attn_context(self, context, attn, num_attn: int = 0):
+        context = self.proj(context)
+        if num_attn == -1 or num_attn >= attn.shape[0]:
+            return self.cxt_dropout(context), attn.detach()
+        elif num_attn == 0 or num_attn < -1:
+            return self.cxt_dropout(context), None
+        else:
+            return self.cxt_dropout(context), attn.detach()[:num_attn]
+
+    def _apply_rotary_embedding(self, hidden_states, relative_position_embeddings):
+        batch_size, sequence_length, hidden_size = hidden_states.size()
+        hidden_states = hidden_states.view(batch_size, sequence_length, self.num_heads, self.head_size)
+
+        cos = relative_position_embeddings[0, :sequence_length, ...]
+        sin = relative_position_embeddings[1, :sequence_length, ...]
+
+        # rotate hidden_states with rotary embeddings
+        hidden_states = hidden_states.transpose(0, 1)
+        rotated_states_begin = hidden_states[..., : self.head_size // 2]
+        rotated_states_end = hidden_states[..., self.head_size // 2 :]
+        rotated_states = torch.cat((-rotated_states_end, rotated_states_begin), dim=rotated_states_begin.ndim - 1)
+        hidden_states = (hidden_states * cos) + (rotated_states * sin)
+        hidden_states = hidden_states.transpose(0, 1)
+
+        hidden_states = hidden_states.view(batch_size, sequence_length, self.num_heads * self.head_size)
+
+        return hidden_states
+
+    def forward(
+        self, x, enc_kv=None, score_mask=None, outter_score_mask=None, sample=False, num_attn: int = 0, pos_info=None
+    ):
+        if self.flash:
+            _, query, key, value, sample = self.get_qkv(x, enc_kv=enc_kv, sample=sample, pos_info=pos_info)
+            score_mask = self.get_mask(
+                x.device,
+                query.size(-2),
+                key.size(-2),
+                score_mask=score_mask,
+                outter_score_mask=outter_score_mask,
+                sample=sample,
+            )
             context = F.scaled_dot_product_attention(
                 query,
                 key,
                 value,
-                attn_mask=scores_mask,
+                score_mask=score_mask,
                 dropout_p=self.attn_dropout_p if self.training else 0.0,
                 is_causal=False,
             )
             context = self._merge_heads(context)
+            attn = None
         else:
-            scores, query, key, value, sample = self.get_scores(x, enc_kv=enc_kv)
-            with torch.no_grad():
-                inner_attn_mask = get_inner_attn_mask(
-                    self.scores_mask,
-                    query.size(-2),
-                    key.size(-1),
-                    x.get_device(),
-                    sample,
-                    self.sample_t,
-                    self.window_size,
-                )
-                if attn_mask is not None and inner_attn_mask is not None:
-                    scores_mask = torch.logical_and(inner_attn_mask, attn_mask)
-                elif inner_attn_mask is not None:
-                    scores_mask = inner_attn_mask
-                elif attn_mask is not None:
-                    scores_mask = attn_mask
-                else:
-                    scores_mask = None
-            attn = self.get_attn(scores, mask=scores_mask)
-            context = self.get_context(attn, value)
-        context = self.proj(context)
-        if return_attn:
-            return self.cxt_dropout(context), attn
-        else:
-            return self.cxt_dropout(context), None
+            score, query, key, value, sample = self.get_scores(x, enc_kv=enc_kv)
+            score_mask = self.get_mask(
+                x.device,
+                query.size(-2),
+                key.size(-1),
+                score_mask=score_mask,
+                outter_score_mask=outter_score_mask,
+                sample=sample,
+            )
+            context, attn = self.get_attn_context(score, value, score_mask=score_mask)
+
+        context, attn = self.post_attn_context(context, attn, num_attn=num_attn)
+        return context, attn, score_mask
 
 
 class NativeRelativePositionMultiHeadAttn(MultiHeadAttn):
@@ -467,7 +535,7 @@ class NativeRelativePositionMultiHeadAttn(MultiHeadAttn):
         scale: Optional[float] = None,
         attn_dropout_p: float = 0.1,
         cxt_dropout_p: float = 0.1,
-        attn_func_type: int = 0,
+        attn_func_type: Union[int, str] = 0,
         channel_last: bool = True,
         spectral_norm: bool = False,
         window_size: int = 5,
@@ -492,6 +560,8 @@ class NativeRelativePositionMultiHeadAttn(MultiHeadAttn):
         if self.window_size is not None:
             self.relative_position_key = RelativePositionalEmbedding(self.head_size, window_size)
             self.relative_position_val = RelativePositionalEmbedding(self.head_size, window_size)
+        else:
+            raise ValueError(" Relative window size must be specified for NativeRelativePositionMultiHeadAttn.")
 
     def get_relative_position_scores(self, x, enc_kv=None, sample=False):
         query, key, value = self.qkv(x, enc_kv=enc_kv)
@@ -516,7 +586,7 @@ class NativeRelativePositionMultiHeadAttn(MultiHeadAttn):
 
     def relative_position_context_val_bias(self, context, attn, len_q, len_v):
         # attn B x H x T1 x T2
-        r_p_key_embedding = self.relative_position_key(len_q, len_v)  # T1 x T2 x C
+        r_p_key_embedding = self.relative_position_val(len_q, len_v)  # T1 x T2 x C
         # B H T1 1 T2 * T1 T2 C -> B H T1 1 C -> B H T1 C -> B T1 H C
         context_val = torch.matmul(attn.unsqueeze(3), r_p_key_embedding).squeeze(3)
         # B H T1 C -> B T1 H C -> B T1 CC
@@ -524,37 +594,34 @@ class NativeRelativePositionMultiHeadAttn(MultiHeadAttn):
         context = context + context_val
         return context
 
-    def forward(self, x, enc_kv=None, attn_mask=None, sample=False, return_attn=False, pos_info=None):
+    def forward(
+        self, x, enc_kv=None, score_mask=None, outter_score_mask=None, sample=False, num_attn: int = 0, pos_info=None
+    ):
         if self.window_size is None:
             context, attn = super().forward(
-                x, enc_kv=enc_kv, attn_mask=attn_mask, sample=sample, return_attn=return_attn, pos_info=pos_info
+                x,
+                enc_kv=enc_kv,
+                score_mask=score_mask,
+                outter_score_mask=outter_score_mask,
+                sample=sample,
+                num_attn=num_attn,
+                pos_info=pos_info,
             )
         else:
             scores, query, key, value, sample = self.get_relative_position_scores(x, enc_kv=enc_kv)
-            len_q = query.size(-2)
-            len_k = key.size(-1)
-            len_v = value.size(-2)
-            with torch.no_grad():
-                inner_attn_mask = get_inner_attn_mask(
-                    self.scores_mask, len_q, len_k, scores, sample, self.sample_t, self.window_size
-                )
-                if attn_mask is not None and inner_attn_mask is not None:
-                    scores_mask = torch.logical_and(inner_attn_mask, attn_mask)
-                elif inner_attn_mask is not None:
-                    scores_mask = inner_attn_mask
-                elif attn_mask is not None:
-                    scores_mask = attn_mask
-                else:
-                    scores_mask = None
-            attn = self.get_attn(scores, mask=scores_mask)
-            context = self.get_context(attn, value)
-            context = self.relative_position_context_val_bias(context, attn, len_q, len_v)
-            context = self.proj(context)
-            context = self.cxt_dropout(context)
-        if return_attn:
-            return context, attn
-        else:
-            return context, None
+            score_mask = self.get_mask(
+                x.device,
+                query.size(-2),
+                key.size(-1),
+                score_mask=score_mask,
+                outter_score_mask=outter_score_mask,
+                sample=sample,
+            )
+            context, attn = self.get_attn_context(scores, value, score_mask=score_mask)
+            context = self.relative_position_context_val_bias(context, attn, query.size(-2), value.size(-2))
+            context, attn = self.post_attn_context(context, attn, num_attn=num_attn)
+
+        return context, attn, score_mask
 
 
 class RelativePositionMultiHeadAttn(MultiHeadAttn):
@@ -578,7 +645,7 @@ class RelativePositionMultiHeadAttn(MultiHeadAttn):
         scale: Optional[float] = None,
         attn_dropout_p: float = 0.1,
         cxt_dropout_p: float = 0.1,
-        attn_func_type: int = 0,
+        attn_func_type: Union[int, str] = 0,
         channel_last: bool = True,
         spectral_norm: bool = False,
         window_size: int = 5,
@@ -657,7 +724,9 @@ class RelativePositionMultiHeadAttn(MultiHeadAttn):
         scores = score_ac + score_bd  # (batch, head, time1, time2)
         return scores, query, key, value, sample
 
-    def forward(self, x, enc_kv=None, attn_mask=None, sample=False, return_attn=False, pos_info=None):
+    def forward(
+        self, x, enc_kv=None, score_mask=None, outter_score_mask=None, sample=False, num_attn: int = 0, pos_info=None
+    ):
         if pos_info is None:
             logger.warn("pos encoding could be shared across layers. It will save memory if passed from params.")
             if self.pe is None:
@@ -669,29 +738,15 @@ class RelativePositionMultiHeadAttn(MultiHeadAttn):
             pos_encoding = pos_info
 
         scores, query, key, value, sample = self.get_scores(x, pos_encoding, enc_kv=enc_kv)
-        with torch.no_grad():
-            inner_attn_mask = get_inner_attn_mask(
-                self.scores_mask,
-                query.size(-2),
-                key.size(-1),
-                query.get_device(),
-                sample,
-                self.sample_t,
-                self.window_size,
-            )
+        score_mask = self.get_mask(
+            x.device,
+            query.size(-2),
+            key.size(-1),
+            score_mask=score_mask,
+            outter_score_mask=outter_score_mask,
+            sample=sample,
+        )
+        context, attn = self.get_attn_context(scores, value, score_mask=score_mask)
+        context, attn = self.post_attn_context(context, attn, num_attn=num_attn)
 
-            if attn_mask is not None and inner_attn_mask is not None:
-                scores_mask = torch.logical_and(inner_attn_mask, attn_mask)
-            elif inner_attn_mask is not None:
-                scores_mask = inner_attn_mask
-            elif attn_mask is not None:
-                scores_mask = attn_mask
-            else:
-                scores_mask = None
-        attn = self.get_attn(scores, mask=scores_mask)
-        context = self.get_context(attn, value)
-        context = self.proj(context)
-        if return_attn:
-            return self.cxt_dropout(context), attn
-        else:
-            return self.cxt_dropout(context), None
+        return context, attn, score_mask

@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.cuda.amp import autocast
 from trainer.loss import GANLoss
-from trainer.utils import set_requires_grad
+from trainer.util import set_requires_grad
 from utils.options import opt_get
 
 

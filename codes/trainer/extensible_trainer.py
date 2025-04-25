@@ -196,7 +196,6 @@ class ExtensibleTrainer(BaseTrainer):
         self.env["generators"] = self.netsG
         self.env["discriminators"] = self.netsD
         self.env["emas"] = self.emas
-
         self.print_network()  # print network
         self.load()  # load networks from save states as needed
 
@@ -373,7 +372,9 @@ class ExtensibleTrainer(BaseTrainer):
                     reuse_out=opt_get(step.step_opt, ["reuse_out"], [None]),
                     raise_oom=raise_oom,
                 )
-                if ns is None or is_oom:
+                if is_oom:
+                    break
+                if ns is None:
                     continue
                 # Call into post-backward hooks.
                 for name, net in self.networks.items():
@@ -535,17 +536,11 @@ class ExtensibleTrainer(BaseTrainer):
         #     end = time()
         #     print(f"consume_gradients: {end - start}")
 
-    def set_net_mode(self, mode="train"):
-        for net in self.netsG.values():
-            if mode == "train":
-                net.train()
-            else:
-                net.eval()
-
-    def test(self):
+    def test(self, raise_oom=None):
         for net in self.netsG.values():
             net.eval()
 
+        is_oom = False
         accum_metrics = InfStorageLossAccumulator()
         with torch.no_grad():
             # This can happen one of two ways: Either a 'validation injector' is provided, in which case we run that.
@@ -566,10 +561,14 @@ class ExtensibleTrainer(BaseTrainer):
                 # Iterate through the steps, performing them one at a time.
                 state = self.dstate
                 for step_num, s in enumerate(self.steps):
-                    is_oom, ns = s.do_forward_backward(state, 0, step_num, train=False, loss_accumulator=accum_metrics)
+                    is_oom, ns = s.do_forward_backward(
+                        state, 0, step_num, train=False, loss_accumulator=accum_metrics, raise_oom=raise_oom
+                    )
                     if not is_oom:
                         for k, v in ns.items():
                             state[k] = [v]
+                    else:
+                        break
 
             self.eval_state = {}
             for k, v in state.items():
@@ -580,7 +579,7 @@ class ExtensibleTrainer(BaseTrainer):
 
         for net in self.netsG.values():
             net.train()
-        return accum_metrics
+        return is_oom, accum_metrics
 
     # Fetches a summary of the log.
     def get_current_log(self, step):

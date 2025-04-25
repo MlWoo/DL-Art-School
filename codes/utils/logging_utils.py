@@ -28,16 +28,14 @@ def get_logger(name, log_file=None, log_level=logging.INFO):
     Returns:
         logging.Logger: The expected logger.
     """
-    logger = logging.getLogger(name)
     if name in logger_initialized:
-        return logger
-    # handle hierarchical names
-    # e.g., logger "a" is initialized, then logger "a.b" will skip the
-    # initialization since it is a child of "a".
+        return logger_initialized[name]
+
     for logger_name in logger_initialized:
         if name.startswith(logger_name):
-            return logger
+            return logger_initialized[logger_name]
 
+    logger = logging.getLogger(name)
     stream_handler = logging.StreamHandler()
     handlers = [stream_handler]
 
@@ -51,7 +49,7 @@ def get_logger(name, log_file=None, log_level=logging.INFO):
         file_handler = logging.FileHandler(log_file, "w")
         handlers.append(file_handler)
 
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    formatter = logging.Formatter("%(asctime)s.%(msecs)03d - %(levelname)s: %(message)s", datefmt="%y-%m-%d %H:%M:%S")
     for handler in handlers:
         handler.setFormatter(formatter)
         handler.setLevel(log_level)
@@ -62,7 +60,7 @@ def get_logger(name, log_file=None, log_level=logging.INFO):
     else:
         logger.setLevel(logging.ERROR)
 
-    logger_initialized[name] = True
+    logger_initialized[name] = logger
 
     return logger
 
@@ -125,4 +123,5 @@ def setup_logger(logger_name, root, phase, level=logging.INFO, screen=False, tof
         sh = logging.StreamHandler()
         sh.setFormatter(formatter)
         lg.addHandler(sh)
-    logger_initialized[logger_name] = True
+
+    logger_initialized[logger_name] = lg

@@ -1,15 +1,15 @@
 # the model aims to use 64Hz code rate.
-name: &name streamconformer-bestrq-large_lr_h100x8_test
+name: &name streamconformer-bestrq-large_lr_h100x8_gelu-causal-sub1-v2
 model: extensibletrainer
 scale: 1
 gpu_ids: [0,1,2,3]
-start_step: -1
+start_step: 0
 checkpointing_enabled: false  # <-- Gradient checkpointing. Enable for huge GPU memory savings. Disable for distributed training.
 grad_scaler_enabled: false
 fp16: &fp16 true # TODO: why does enabling this with 8bit slow down perf??
 half_type : &half_type bf16
 use_8bit: false
-wandb: false  # <-- enable to log to wandb. tensorboard logging is always enabled.
+wandb: true  # <-- enable to log to wandb. tensorboard logging is always enabled.
 wandb_project_name: *name
 wandb_run_name: first_trial
 cuda_benchmarking_enabled: false
@@ -34,8 +34,8 @@ audio_process: &audio_process
     true_normalization: false
     mel_norm_file: /home/wumenglin/repo-dev/dl-art-school/codes/torch_mels.pt
 
-search_batch_size_for_bucket: false
-
+search_batch_size_for_bucket: true
+search_batch_size_for_bucket_max_memory_fraction: 0.88
 dataloaders:
   train:
     # data loader background
@@ -43,7 +43,7 @@ dataloaders:
     buffer_background_size: 2
     process_background: true
     process_device: -1
-    n_workers: 0
+    n_workers: 12
     pin_memory: true
 
     dataset:
@@ -52,11 +52,12 @@ dataloaders:
       seed: *manual_seed
       mode: HuggingfaceAudioDataset
       store_type: parquet #json
-      data_file: /home/wumenglin/repo-dev/dl-art-school/codes/scripts/peoples_speech/dirty/val*
-      cache_dir: /home/wumenglin/cache/peoples_speech/dirty
+      data_file:
+        - /data0/shoppal/wumenglin/data/hf/librilight-webdataset/*.parquet
+      cache_dir: /home/wumenglin/.cache/hf/librilight-webdataset
       min_duration: 0.3
       max_duration: -1
-      sample_duration: 15
+      sample_duration: 40
       cache_text: false
       cache_audio: mel
       read_keys: ['audio', 'audio_lengths']
@@ -77,16 +78,16 @@ dataloaders:
       persistent_workers: True
       pad_to_samples: 200
       batch_mode: bucketed
-      num_buckets: 6
+      num_buckets: 16
       ## dynamical data sampler
       max_tokens: 54000 # 15 * 768 ^ 1.2 # 34802, 43503 120000/a100
       acc_coeffs: ((1.0, 1.0))
       max_samples: 512
 
       ## bucketed data sampler
-      bucket_max_batch_tokens: 4096
+      bucket_max_batch_tokens: 16384
       bucket_min_samples: 1
-      bucket_max_samples: 64
+      bucket_max_samples: 96
 
     collator:
       mode: MelsInferCollator
@@ -120,7 +121,7 @@ dataloaders:
       cache_dir: /home/wumenglin/cache/peoples_speech/dirty
       min_duration: 0.3
       max_duration: -1
-      sample_duration: 15
+      sample_duration: 40
       seed: *manual_seed
       cache_text: false
       cache_audio: mel
@@ -143,15 +144,15 @@ dataloaders:
       persistent_workers: True
       pad_to_samples: 200
       batch_mode: bucketed
-      num_buckets: 6
+      num_buckets: 16
       ## dynamical data sampler
       max_tokens: 54000 # 15 * 768 ^ 1.2 # 34802, 43503 120000/a100
       acc_coeffs: ((1.0, 1.0))
       max_samples: 512
       ## bucketed data sampler
-      bucket_max_batch_tokens: 4096
+      bucket_max_batch_tokens: 16384
       bucket_min_samples: 1
-      bucket_max_samples: 64
+      bucket_max_samples: 168
 
     collator:
       mode: MelsInferCollator
@@ -187,7 +188,7 @@ networks:
         num_attention_heads: 8
         hidden_size: *num_model_dim
         ffn_dim: 4096
-        num_hidden_layers: 24
+        num_hidden_layers: 20
         conv_depthwise_kernel_size: 4
         feat_proj_dropout: 0.
         activation_dropout: 0.
@@ -201,16 +202,17 @@ networks:
         rotary_embedding_base: 10000
         layerdrop: 0.
         final_dropout: 0.
-        num_preconformer_layers: 0
+        num_preconformer_layers: 3
         num_preconformer_heads: 4
         preconformer_hidden_size: 384
         preconformer_ffn_dim: 1536
         preconformer_input_feature_projection: false
         causal: true
-        conv_hidden_size: [8, 32]
+        sub_layers: 1
+        conv_hidden_size: [8,]
         compile: false
         window_size: 64
-        stream_chunk_size: 4 #160ms
+        stream_chunk_size: 8 #160ms
 
 exp_dir: &exp_dir
   !join [../experiments/, *name]

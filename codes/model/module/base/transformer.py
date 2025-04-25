@@ -1,4 +1,5 @@
 import inspect
+import math
 from abc import ABCMeta, abstractmethod
 from typing import Optional, Tuple, Union
 
@@ -8,9 +9,10 @@ from torch import Tensor, nn
 from .conv import Conv1DBlock
 from .feed_forward import ConformerFeedForwardNetwork, ConvFeedForwardNetwork, PositionwiseFeedForwardNetwork
 from .linear import Linear
-from .mask import get_outter_attn_mask
+from .mask import get_chunks_ceil_score_mask, get_inner_score_mask, get_outter_score_mask
 from .multi_heads_attn import MultiHeadAttn, NativeRelativePositionMultiHeadAttn, RelativePositionMultiHeadAttn
 from .normalization import ForgottenLayerNorm
+from .positional_encoding import PositionalEncoding, RelativePositionalEncoding, RotaryPositionalEncoding
 from .util import extend2tuple
 
 
@@ -37,7 +39,6 @@ class AbcResAttnBlock(nn.Module, metaclass=ABCMeta):
         concat_after: bool = False,
         LN_learnable: bool = True,
         channel_last: bool = True,
-        chunk_len: Optional[int] = None,
     ):
         assert attn_size == attn.in_size
         super().__init__()
@@ -142,7 +143,6 @@ class AbcResAttnBlock(nn.Module, metaclass=ABCMeta):
         self.concat_after = concat_after
         self.LN_learnable = LN_learnable
         self.pre_conv_module = pre_conv_module
-        self.chunk_len = chunk_len
         self.channel_last = channel_last
 
     def get_kwargs(self, init_func, local_vars):
@@ -161,13 +161,14 @@ class AbcResAttnBlock(nn.Module, metaclass=ABCMeta):
         enc_kv: Optional[Tensor] = None,
         x_mask: Optional[Tensor] = None,
         kv_mask: Optional[Tensor] = None,
-        attn_mask: Optional[Tensor] = None,
+        outter_score_mask: Optional[Tensor] = None,
+        score_mask: Optional[Tensor] = None,
         sample: bool = False,
-        return_attn: bool = False,
+        num_attn: int = 0,
         pos_info: Optional[Tensor] = None,
     ):
         # B T C
-        attn_mask = get_outter_attn_mask(attn_mask, x_mask, kv_mask)
+        outter_score_mask = get_outter_score_mask(outter_score_mask, x_mask, kv_mask)
 
         # macaron_ffn module
         if self.macaron_ffn is not None:
@@ -199,19 +200,15 @@ class AbcResAttnBlock(nn.Module, metaclass=ABCMeta):
         if self.pre_LN:
             x = self.layernorm(x, idx=0)
 
-        if self.chunk_len is not None:
-            bs, time, channel = x.shape
-            if self.channel_last:
-                x = x.reshape(-1, self.chunk_len, channel)
-            else:
-                raise NotImplementedError("Attention with channels last is not supported.")
-
-        context, attn = self.attn(
-            x, enc_kv=enc_kv, attn_mask=attn_mask, sample=sample, return_attn=return_attn, pos_info=pos_info
+        context, attn, score_mask = self.attn(
+            x,
+            enc_kv=enc_kv,
+            score_mask=score_mask,
+            outter_score_mask=outter_score_mask,
+            sample=sample,
+            num_attn=num_attn,
+            pos_info=pos_info,
         )
-
-        if self.chunk_len is not None:
-            context = context.reshape(bs, time, channel)
 
         if x_mask is not None:
             context = context * x_mask
@@ -251,7 +248,7 @@ class AbcResAttnBlock(nn.Module, metaclass=ABCMeta):
         if not self.pre_LN:
             x = self.layernorm(x, idx=1)
 
-        return x, attn
+        return x, attn, score_mask
 
 
 class ResAttnBlock(AbcResAttnBlock):
@@ -275,7 +272,6 @@ class ResAttnBlock(AbcResAttnBlock):
         concat_after: bool = False,
         causal: bool = False,
         padding_mode: str = "zeros",
-        chunk_len: Optional[int] = None,
     ):
         module_kwargs = super().get_kwargs(self.__init__, locals())
         super().__init__(**module_kwargs)
@@ -305,7 +301,6 @@ class AdaptLNResAttnBlock(AbcResAttnBlock):
         concat_after: bool = False,
         causal: bool = False,
         padding_mode: str = "zeros",
-        chunk_len: Optional[int] = None,
     ):
         module_kwargs = super().get_kwargs(self.__init__, locals())
         module_kwargs["LN_learnable"] = True
@@ -322,9 +317,9 @@ class AdaptLNResAttnBlock(AbcResAttnBlock):
         enc_kv: Optional[Tensor] = None,
         x_mask: Optional[Tensor] = None,
         kv_mask: Optional[Tensor] = None,
-        attn_mask: Optional[Tensor] = None,
+        score_mask: Optional[Tensor] = None,
         sample: bool = False,
-        return_attn: bool = False,
+        num_attn: int = 0,
         pos_info: Optional[Tensor] = None,
         **kwargs,
     ):
@@ -334,14 +329,14 @@ class AdaptLNResAttnBlock(AbcResAttnBlock):
             enc_kv=enc_kv,
             x_mask=x_mask,
             kv_mask=kv_mask,
-            attn_mask=attn_mask,
+            score_mask=score_mask,
             sample=sample,
-            return_attn=return_attn,
+            num_attn=num_attn,
             pos_info=pos_info,
         )
 
 
-class AbcTransformer(nn.Module, metaclass=ABCMeta):
+class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
     ATTN_CLS_TYPE_MAP = {
         "base": MultiHeadAttn,
         "wo-pos": MultiHeadAttn,
@@ -377,7 +372,7 @@ class AbcTransformer(nn.Module, metaclass=ABCMeta):
         num_heads: int,
         num_hidden_layers: int,
         attn_type: str = "base",
-        attn_func_type: int = 0,
+        attn_func_type: Union[int, str] = 0,
         ffn_kernel_size: Union[int, Tuple[int, int]] = 1,
         ffn_act_func: str = "mish",
         attn_dropout_p: float = 0.0,
@@ -395,7 +390,8 @@ class AbcTransformer(nn.Module, metaclass=ABCMeta):
         final_LN: bool = True,
         causal: bool = False,
         padding_mode: str = "zeros",
-        chunk_len: Optional[int] = None,
+        chunkwise_size: Optional[int] = None,
+        stream_chunk_size: Optional[int] = None,
         channel_last: bool = True,
         spectral_norm: bool = False,
         window_size: int = 5,
@@ -444,6 +440,9 @@ class AbcTransformer(nn.Module, metaclass=ABCMeta):
                 Whether to do LN for transformer final output tensor
         """
         super().__init__()
+        assert (
+            stream_chunk_size is None or stream_chunk_size > 0 and causal
+        ), "stream_chunk_size must be positive and causal must be True"
         in_attn_size_tuple = (in_attn_size,) + extend2tuple(out_attn_size, num_hidden_layers - 1)
         head_attn_size_tuple = extend2tuple(head_attn_size, num_hidden_layers)
         out_attn_size_tuple = extend2tuple(out_attn_size, num_hidden_layers)
@@ -486,7 +485,6 @@ class AbcTransformer(nn.Module, metaclass=ABCMeta):
                 concat_after=ffn_cat_after,
                 causal=causal,
                 padding_mode=padding_mode,
-                chunk_len=chunk_len,
             )
             self.layers.append(res_attn_block)
         if pre_LN and final_LN:
@@ -499,7 +497,8 @@ class AbcTransformer(nn.Module, metaclass=ABCMeta):
         else:
             self.num_ln_layers = 2
         self.channel_last = channel_last
-        self.chunk_len = chunk_len
+        self.chunkwise_size = chunkwise_size
+        self.stream_chunk_size = stream_chunk_size
 
     def get_kwargs(self, init_func, local_vars):
         module_kwargs = inspect.getfullargspec(init_func).args
@@ -511,8 +510,83 @@ class AbcTransformer(nn.Module, metaclass=ABCMeta):
     def choose_res_block(self):
         raise NotImplementedError
 
+    def get_score_mask(self, x, enc_kv, x_mask, kv_mask, outter_score_mask, sample):
+        score_mask = None
+        with torch.no_grad():
+            outter_score_mask = get_outter_score_mask(outter_score_mask, x_mask, kv_mask)
+            if x_mask is not None and outter_score_mask is not None:
+                outter_score_mask = outter_score_mask.masked_fill(~x_mask[:, None], True)
+            scores_mask = self.layers[0].attn.scores_mask
+            window_size = self.layers[0].attn.window_size
+            sample_t = self.layers[0].attn.sample_t
+            seq_l = x.shape[1]
+            device = x.device
 
-class Transformer(AbcTransformer):
+            score_mask = None
+            if self.chunkwise_size is not None:
+                if self.channel_last:
+                    # (-1, chunk_size, chunk_size)
+                    folded_chunk_score_mask, chunks = get_chunks_ceil_score_mask(
+                        seq_l, self.chunkwise_size, x.device, return_folded=True
+                    )
+                    folded_chunk_inner_score_mask = get_inner_score_mask(
+                        scores_mask,
+                        self.chunkwise_size,
+                        self.chunkwise_size,
+                        device,
+                        sample,
+                        sample_t,
+                        window_size,
+                    )
+
+                    if folded_chunk_inner_score_mask is not None:
+                        folded_chunk_score_mask = torch.logical_or(
+                            folded_chunk_score_mask, folded_chunk_inner_score_mask
+                        )
+
+                    chunk_score_mask = folded_chunk_score_mask.view(
+                        chunks, chunks, self.chunkwise_size, self.chunkwise_size
+                    )
+                    chunk_score_mask = chunk_score_mask.permute(0, 2, 1, 3).reshape(seq_l, seq_l)
+                    score_mask = chunk_score_mask[:seq_l, :seq_l].reshape(1, 1, seq_l, seq_l)
+                else:
+                    raise NotImplementedError("Attention with channels last is not supported.")
+
+            else:
+                inner_score_mask = get_inner_score_mask(
+                    scores_mask,
+                    seq_l,
+                    seq_l if enc_kv is None else enc_kv.shape[-1],
+                    device,
+                    sample,
+                    sample_t,
+                    window_size,
+                )
+                if self.stream_chunk_size is not None:
+                    if self.channel_last:
+                        chunk_score_mask, _ = get_chunks_ceil_score_mask(seq_l, self.stream_chunk_size, device)
+                        chunk_score_mask = chunk_score_mask[:seq_l, :seq_l].reshape(1, 1, seq_l, seq_l)
+
+                        if inner_score_mask is not None:
+                            score_mask = torch.logical_or(chunk_score_mask, inner_score_mask)
+                        else:
+                            score_mask = chunk_score_mask
+
+                        if outter_score_mask is not None:
+                            score_mask = torch.logical_and(score_mask, outter_score_mask)
+                    else:
+                        raise NotImplementedError("Attention with channels last is not supported.")
+                else:
+                    score_mask = chunk_score_mask
+
+            if outter_score_mask is not None and score_mask is not None:
+                score_mask = torch.logical_and(score_mask, outter_score_mask)
+            else:
+                score_mask = outter_score_mask
+        return score_mask
+
+
+class TransformerBlocks(AbcTransformerBlocks):
     """Transformer.
     https://arxiv.org/pdf/2002.04745v1.pdf
     Args:
@@ -542,7 +616,7 @@ class Transformer(AbcTransformer):
         num_heads: int,
         num_hidden_layers: int,
         attn_type: str = "base",
-        attn_func_type: int = 0,
+        attn_func_type: Union[int, str] = 0,
         ffn_kernel_size: Union[int, Tuple[int, int]] = 1,
         ffn_act_func: str = "mish",
         attn_dropout_p: float = 0.0,
@@ -560,7 +634,8 @@ class Transformer(AbcTransformer):
         final_LN: bool = True,
         causal: bool = False,
         padding_mode: str = "zeros",
-        chunk_len: Optional[int] = None,
+        chunkwise_size: Optional[int] = None,
+        stream_chunk_size: Optional[int] = None,
         channel_last: bool = True,
         spectral_norm: bool = False,
         window_size: int = 5,
@@ -579,11 +654,10 @@ class Transformer(AbcTransformer):
         enc_kv: Optional[Tensor] = None,
         x_mask: Optional[Tensor] = None,
         kv_mask: Optional[Tensor] = None,
-        attn_mask: Optional[Tensor] = None,
+        outter_score_mask: Optional[Tensor] = None,
         sample: bool = False,
-        return_all: bool = False,
-        return_attn: bool = False,
-        return_attn_num: int = -1,
+        all_hidden_states: bool = False,
+        num_attn: int = 0,
         pos_info: Optional[Tensor] = None,
         layer_idx: int = -1,
     ):
@@ -593,62 +667,45 @@ class Transformer(AbcTransformer):
             x_mask: [B, T, C] usually B, T, 1
         """
         # B 1 T_q T_kv
-        with torch.no_grad():
-            attn_mask = get_outter_attn_mask(attn_mask, x_mask, kv_mask)
-            if x_mask is not None:
-                attn_mask = attn_mask.masked_fill(~x_mask[:, None], True)
-
-            if self.chunk_len is not None:
-                bs, time, channel = x.shape
-                if self.channel_last:
-                    if attn_mask is not None:
-                        chunks = time // self.chunk_len
-                        attn_mask_o = attn_mask
-                        attn_mask1 = attn_mask_o.reshape(bs, chunks, self.chunk_len, chunks, self.chunk_len)
-                        attn_mask2 = attn_mask1.permute(0, 1, 3, 2, 4).reshape(bs, -1, self.chunk_len, self.chunk_len)
-                        attn_mask3 = attn_mask2[:, 0 :: (chunks + 1)].reshape(-1, 1, self.chunk_len, self.chunk_len)
-                        attn_mask = attn_mask3
-                else:
-                    raise NotImplementedError("Attention with channels last is not supported.")
+        score_mask = self.get_score_mask(x, enc_kv, x_mask, kv_mask, outter_score_mask, sample)
 
         attn_tuple = []
-        result_tuple = []
+        hidden_state_tuple = []
+        score_mask_tuple = []
         for i, block in enumerate(self.layers):
-            x, attn = block(
+            x, attn, score_mask_out = block(
                 x,
                 enc_kv=enc_kv,
                 x_mask=x_mask,
                 kv_mask=kv_mask,
-                attn_mask=attn_mask,
+                score_mask=score_mask,
                 sample=sample,
-                return_attn=return_attn,
+                num_attn=num_attn,
                 pos_info=pos_info,
             )
-            if return_attn:
-                if return_attn_num == -1 or return_attn_num >= attn.shape[0]:
-                    attn_tuple.append(attn)
-                else:
-                    attn_tuple.append(attn[:return_attn_num])
-            if return_all:
-                result_tuple.append(x)
+            score_mask_tuple.append(score_mask_out)
+            attn_tuple.append(attn)
+            if all_hidden_states:
+                hidden_state_tuple.append(x)
+            else:
+                hidden_state_tuple.append(None)
             if i == layer_idx:
-                if return_all:
-                    result_tuple[-1] = x
+                if all_hidden_states:
+                    hidden_state_tuple[-1] = x
                 else:
-                    result_tuple = x
-                return result_tuple, attn_tuple
+                    hidden_state_tuple = x
+                return hidden_state_tuple, attn_tuple, score_mask_tuple
+
         if self.final_ln is not None:
             x = self.final_ln(x)
         if x_mask is not None:
             x = x * x_mask
-        if return_all:
-            result_tuple[-1] = x
-        else:
-            result_tuple = x
-        return result_tuple, attn_tuple
+        hidden_state_tuple.append(x)
+
+        return hidden_state_tuple, attn_tuple, score_mask_tuple
 
 
-class AdaptLNTransformer(AbcTransformer):
+class AdaptLNTransformerBlocks(AbcTransformerBlocks):
     """Transformer.
     https://arxiv.org/pdf/2002.04745v1.pdf
     Args:
@@ -678,7 +735,7 @@ class AdaptLNTransformer(AbcTransformer):
         num_heads: int,
         num_hidden_layers: int,
         attn_type: str = "base",
-        attn_func_type: int = 0,
+        attn_func_type: Union[int, str] = 0,
         ffn_kernel_size: Union[int, Tuple[int, int]] = 1,
         ffn_act_func: str = "mish",
         attn_dropout_p: float = 0.0,
@@ -697,7 +754,7 @@ class AdaptLNTransformer(AbcTransformer):
         channel_last: bool = True,
         causal: bool = False,
         padding_mode: str = "zeros",
-        chunk_len: Optional[int] = None,
+        chunkwise_size: Optional[int] = None,
         spectral_norm: bool = False,
         window_size: int = 5,
         zero_triu: bool = False,
@@ -715,11 +772,10 @@ class AdaptLNTransformer(AbcTransformer):
         enc_kv: Optional[Tensor] = None,
         x_mask: Optional[Tensor] = None,
         kv_mask: Optional[Tensor] = None,
-        attn_mask: Optional[Tensor] = None,
+        outter_score_mask: Optional[Tensor] = None,
         sample: bool = False,
-        return_all: bool = False,
-        return_attn: bool = False,
-        return_attn_num: int = -1,
+        all_hidden_states: bool = False,
+        num_attn: int = -1,
         pos_info: Optional[Tensor] = None,
         ln_mean_scale: Optional[Tensor] = None,
     ):
@@ -729,9 +785,10 @@ class AdaptLNTransformer(AbcTransformer):
             x_mask: [B, T, C] usually B, T, 1
         """
         # B 1 T_q T_kv
-        attn_mask = get_outter_attn_mask(attn_mask, x_mask, kv_mask)
+        score_mask = self.get_score_mask(x, enc_kv, x_mask, kv_mask, outter_score_mask, sample)
         attn_tuple = []
-        result_tuple = []
+        hidden_state_tuple = []
+        score_mask_tuple = []
 
         assert (
             ln_mean_scale is not None
@@ -755,36 +812,34 @@ class AdaptLNTransformer(AbcTransformer):
                     weight_2=mean_scale_vectors[6 * i + 4],
                     bias_2=mean_scale_vectors[6 * i + 5],
                 )
-            x, attn = block(
+            x, attn, score_mask = block(
                 x,
                 enc_kv=enc_kv,
                 x_mask=x_mask,
                 kv_mask=kv_mask,
-                attn_mask=attn_mask,
+                score_mask=score_mask,
                 sample=sample,
-                return_attn=return_attn,
+                num_attn=num_attn,
                 pos_info=pos_info,
                 **control_ln_dict,
             )
-            if return_attn:
-                if return_attn_num == -1 or return_attn_num >= attn.shape[0]:
-                    attn_tuple.append(attn)
-                else:
-                    attn_tuple.append(attn[:return_attn_num])
-            if return_all:
-                result_tuple.append(x)
+            attn_tuple.append(attn)
+            score_mask_tuple.append(score_mask)
+            if all_hidden_states:
+                hidden_state_tuple.append(x)
+            else:
+                hidden_state_tuple.append(None)
+
         if self.final_ln is not None:
             x = self.final_ln(x)
         if x_mask is not None:
             x = x * x_mask
-        if return_all:
-            result_tuple[-1] = x
-        else:
-            result_tuple = x
-        return result_tuple, attn_tuple
+        hidden_state_tuple.append(x)
+
+        return hidden_state_tuple, attn_tuple, score_mask_tuple
 
 
-class ResAdaptTransformer(AbcTransformer):
+class ResAdaptTransformerBlocks(AbcTransformerBlocks):
     """Transformer.
     https://arxiv.org/pdf/2002.04745v1.pdf
     Args:
@@ -814,7 +869,7 @@ class ResAdaptTransformer(AbcTransformer):
         num_heads: int,
         num_hidden_layers: int,
         attn_type: str = "base",
-        attn_func_type: int = 0,
+        attn_func_type: Union[int, str] = 0,
         ffn_kernel_size: Union[int, Tuple[int, int]] = 1,
         ffn_act_func: str = "mish",
         attn_dropout_p: float = 0.0,
@@ -833,7 +888,7 @@ class ResAdaptTransformer(AbcTransformer):
         channel_last: bool = True,
         causal: bool = False,
         padding_mode: str = "zeros",
-        chunk_len: Optional[int] = None,
+        chunkwise_size: Optional[int] = None,
         spectral_norm: bool = False,
         window_size: int = 5,
         zero_triu: bool = False,
@@ -851,11 +906,10 @@ class ResAdaptTransformer(AbcTransformer):
         enc_kv: Optional[Tensor] = None,
         x_mask: Optional[Tensor] = None,
         kv_mask: Optional[Tensor] = None,
-        attn_mask: Optional[Tensor] = None,
+        outter_score_mask: Optional[Tensor] = None,
         sample: bool = False,
-        return_all: bool = False,
-        return_attn: bool = False,
-        return_attn_num: int = -1,
+        all_hidden_states: bool = False,
+        num_attn: int = -1,
         pos_info: Optional[Tensor] = None,
         residual_adapter=None,
     ):
@@ -865,35 +919,353 @@ class ResAdaptTransformer(AbcTransformer):
             x_mask: [B, T, C] usually B, T, 1
         """
         # B 1 T_q T_kv
-        attn_mask = get_outter_attn_mask(attn_mask, x_mask, kv_mask)
+        score_mask = self.get_score_mask(x, enc_kv, x_mask, kv_mask, outter_score_mask, sample)
+
         attn_tuple = []
-        result_tuple = []
+        hidden_state_tuple = []
+        score_mask_tuple = []
         for i, block in enumerate(self.layers):
-            x, attn = block(
+            x, attn, score_mask_out = block(
                 x,
                 enc_kv=enc_kv,
                 x_mask=x_mask,
                 kv_mask=kv_mask,
-                attn_mask=attn_mask,
+                score_mask=score_mask,
                 sample=sample,
-                return_attn=return_attn,
+                num_attn=num_attn,
                 pos_info=pos_info,
             )
             if residual_adapter is not None:
                 x = x + residual_adapter(x, i)
-            if return_attn:
-                if return_attn_num == -1 or return_attn_num >= attn.shape[0]:
-                    attn_tuple.append(attn)
-                else:
-                    attn_tuple.append(attn[:return_attn_num])
-            if return_all:
-                result_tuple.append(x)
+            attn_tuple.append(attn)
+            score_mask_tuple.append(score_mask_out)
+            if all_hidden_states:
+                hidden_state_tuple.append(x)
+            else:
+                hidden_state_tuple.append(None)
+
         if self.final_ln is not None:
             x = self.final_ln(x)
         if x_mask is not None:
             x = x * x_mask
-        if return_all:
-            result_tuple[-1] = x
+        hidden_state_tuple.append(x)
+
+        return hidden_state_tuple, attn_tuple, score_mask_tuple
+
+
+class Transformer(nn.Module):
+    """Base class for FS2Encoder."""
+
+    def __init__(
+        self,
+        attn_type: str = "base",
+        num_hidden_layers: int = 4,
+        num_attention_heads: int = 2,
+        num_attn_in_dim: int = 512,
+        num_attn_head_dim: int = 256,
+        num_attn_out_dim: int = 512,
+        ffn_dim: int = 1024,
+        attn_func_type: int = 0,
+        ffn_kernel_size: Union[int, Tuple[int, int]] = (9, 1),
+        ffn_act_func: str = "mish",
+        attn_dropout_p: float = 0.0,
+        cxt_dropout_p: float = 0.0,
+        ffn_dropout_p: float = 0.0,
+        pre_LN: bool = False,
+        final_LN: bool = True,
+        use_macaron: bool = False,
+        conv_module_type: Optional[str] = None,
+        conv_module_kernel_size: int = 31,
+        conformer_conv_dropout_p: float = 0.0,
+        pre_conv_module: bool = True,
+        ffn_cat_after: bool = False,
+        causal: bool = False,
+        padding_mode: str = "zeros",
+        chunkwise_size: Optional[int] = None,
+        stream_chunk_size: Optional[int] = None,
+        norm_groups: int = 0,
+        pos_type: str = "base",
+        pos_dropout_p: float = 0.0,
+        window_size: Optional[int] = None,
+        max_len: int = 1000,
+    ):
+        super().__init__()
+        if attn_type == "base":
+            x_scale = None
+            scaled = False
+            if pos_type == "scaled":
+                scaled = True
+            elif pos_type == "nlp":
+                x_scale = None
+            else:
+                x_scale = 1.0
+            self.pos_enc = PositionalEncoding(
+                num_attn_in_dim, dropout_p=pos_dropout_p, scale=x_scale, scaled=scaled, max_len=max_len
+            )
+        elif attn_type == "rpr":
+            if pos_type == "nlp":
+                x_scale = None
+            else:
+                x_scale = 1.0
+            self.pos_enc = RelativePositionalEncoding(
+                num_attn_head_dim * num_attention_heads,
+                dropout_p=pos_dropout_p,
+                scale=x_scale,
+                max_len=max_len,
+                win_len=window_size,
+                chunkwise_len=chunkwise_size,
+            )
+        elif attn_type == "rope":
+            self.pos_enc = RotaryPositionalEncoding(num_attn_head_dim * num_attention_heads, base=10000)
+        elif attn_type == "rpr-native":
+            self.x_scale = math.sqrt(num_attn_in_dim)
+        elif attn_type == "wo-pos":
+            self.x_scale = 1.0
         else:
-            result_tuple = x
-        return result_tuple, attn_tuple
+            raise ValueError(f"Transformer: {attn_type} is not supported for the moment")
+
+        self.layers = TransformerBlocks(
+            in_attn_size=num_attn_in_dim,
+            head_attn_size=num_attn_head_dim,
+            out_attn_size=num_attn_out_dim,
+            hidden_ffn_size=ffn_dim,
+            num_hidden_layers=num_hidden_layers,
+            num_heads=num_attention_heads,
+            out_ffn_size=num_attn_out_dim,
+            attn_type=attn_type,
+            attn_func_type=attn_func_type,
+            ffn_kernel_size=ffn_kernel_size,
+            ffn_act_func=ffn_act_func,
+            attn_dropout_p=attn_dropout_p,
+            cxt_dropout_p=cxt_dropout_p,
+            ffn_dropout_p=ffn_dropout_p,
+            pre_LN=pre_LN,
+            use_macaron=use_macaron,
+            conv_module_type=conv_module_type,
+            conv_module_kernel_size=conv_module_kernel_size,
+            conformer_conv_dropout_p=conformer_conv_dropout_p,
+            pre_conv_module=pre_conv_module,
+            ffn_cat_after=ffn_cat_after,
+            causal=causal,
+            padding_mode=padding_mode,
+            chunkwise_size=chunkwise_size,
+            stream_chunk_size=stream_chunk_size,
+            norm_groups=norm_groups,
+            final_LN=final_LN,
+            window_size=window_size,
+            max_len=max_len,
+        )
+        self.attn_type = attn_type
+
+    def forward(
+        self,
+        x: Tensor,
+        x_mask: Optional[Tensor] = None,
+        extra: Optional[Tensor] = None,
+        fertilities: Optional[Tensor] = None,
+        indices: Optional[Tensor] = None,
+        enc_kv: Optional[Tensor] = None,
+        kv_mask: Optional[Tensor] = None,
+        outter_score_mask: Optional[Tensor] = None,
+        sample: bool = False,
+        all_hidden_states: bool = False,
+        num_attn: int = -1,
+        layer_idx: int = -1,
+    ):
+        """
+        text - (batch, maxseqlen)
+        """
+        if self.attn_type == "base":
+            assert (
+                fertilities is None or indices is None
+            ), "The encoding is confused if both fertilities and indices are provided."
+            x, pos_encoding = self.pos_enc(x, fertilities, indices)
+            hidden_state_tuple, attn_tuple, score_mask_tuple = self.transformer(
+                x,
+                x_mask=x_mask,
+                enc_kv=enc_kv,
+                kv_mask=kv_mask,
+                outter_score_mask=outter_score_mask,
+                sample=sample,
+                all_hidden_states=all_hidden_states,
+                num_attn=num_attn,
+                layer_idx=layer_idx,
+            )
+        else:
+            if self.attn_type in ["rpr", "rope"]:
+                x, pos_encoding = self.pos_enc(x)
+            else:
+                x = x * self.x_scale
+                pos_encoding = None
+            hidden_state_tuple, attn_tuple, score_mask_tuple = self.layers(
+                x,
+                pos_info=pos_encoding,
+                x_mask=x_mask,
+                enc_kv=enc_kv,
+                kv_mask=kv_mask,
+                outter_score_mask=outter_score_mask,
+                sample=sample,
+                all_hidden_states=all_hidden_states,
+                num_attn=num_attn,
+                layer_idx=layer_idx,
+            )
+
+        return hidden_state_tuple, attn_tuple, score_mask_tuple
+
+
+class TransformerCompile(TransformerBlocks):
+    """Base class for FS2Encoder."""
+
+    def __init__(
+        self,
+        attn_type: str = "base",
+        num_hidden_layers: int = 4,
+        num_attention_heads: int = 2,
+        num_attn_in_dim: int = 512,
+        num_attn_head_dim: int = 256,
+        num_attn_out_dim: int = 512,
+        ffn_dim: int = 1024,
+        attn_func_type: int = 0,
+        ffn_kernel_size: Union[int, Tuple[int, int]] = (9, 1),
+        ffn_act_func: str = "mish",
+        attn_dropout_p: float = 0.0,
+        cxt_dropout_p: float = 0.0,
+        ffn_dropout_p: float = 0.0,
+        pre_LN: bool = False,
+        final_LN: bool = True,
+        use_macaron: bool = False,
+        conv_module_type: Optional[str] = None,
+        conv_module_kernel_size: int = 31,
+        conformer_conv_dropout_p: float = 0.0,
+        pre_conv_module: bool = True,
+        ffn_cat_after: bool = False,
+        causal: bool = False,
+        padding_mode: str = "zeros",
+        chunkwise_size: Optional[int] = None,
+        stream_chunk_size: Optional[int] = None,
+        norm_groups: int = 0,
+        pos_type: str = "base",
+        pos_dropout_p: float = 0.0,
+        window_size: Optional[int] = None,
+        max_len: int = 1000,
+    ):
+        super().__init__(
+            in_attn_size=num_attn_in_dim,
+            head_attn_size=num_attn_head_dim,
+            out_attn_size=num_attn_out_dim,
+            hidden_ffn_size=ffn_dim,
+            num_hidden_layers=num_hidden_layers,
+            num_heads=num_attention_heads,
+            out_ffn_size=num_attn_out_dim,
+            attn_type=attn_type,
+            attn_func_type=attn_func_type,
+            ffn_kernel_size=ffn_kernel_size,
+            ffn_act_func=ffn_act_func,
+            attn_dropout_p=attn_dropout_p,
+            cxt_dropout_p=cxt_dropout_p,
+            ffn_dropout_p=ffn_dropout_p,
+            pre_LN=pre_LN,
+            use_macaron=use_macaron,
+            conv_module_type=conv_module_type,
+            conv_module_kernel_size=conv_module_kernel_size,
+            conformer_conv_dropout_p=conformer_conv_dropout_p,
+            pre_conv_module=pre_conv_module,
+            ffn_cat_after=ffn_cat_after,
+            causal=causal,
+            padding_mode=padding_mode,
+            chunkwise_size=chunkwise_size,
+            stream_chunk_size=stream_chunk_size,
+            norm_groups=norm_groups,
+            final_LN=final_LN,
+            window_size=window_size,
+            max_len=max_len,
+        )
+        if attn_type == "base":
+            x_scale = None
+            scaled = False
+            if pos_type == "scaled":
+                scaled = True
+            elif pos_type == "nlp":
+                x_scale = None
+            else:
+                x_scale = 1.0
+            self.pos_enc = PositionalEncoding(
+                num_attn_in_dim, dropout_p=pos_dropout_p, scale=x_scale, scaled=scaled, max_len=max_len
+            )
+        elif attn_type == "rpr":
+            if pos_type == "nlp":
+                x_scale = None
+            else:
+                x_scale = 1.0
+            self.pos_enc = RelativePositionalEncoding(
+                num_attn_head_dim * num_attention_heads,
+                dropout_p=pos_dropout_p,
+                scale=x_scale,
+                max_len=max_len,
+                win_len=window_size,
+                chunkwise_len=chunkwise_size,
+            )
+        elif attn_type == "rope":
+            self.pos_enc = RotaryPositionalEncoding(num_attn_head_dim * num_attention_heads, base=10000)
+        elif attn_type == "rpr-native":
+            self.x_scale = math.sqrt(num_attn_in_dim)
+        elif attn_type == "wo-pos":
+            self.x_scale = 1.0
+        else:
+            raise ValueError(f"Transformer: {attn_type} is not supported for the moment")
+        self.attn_type = attn_type
+
+    def forward(
+        self,
+        x: Tensor,
+        x_mask: Optional[Tensor] = None,
+        extra: Optional[Tensor] = None,
+        fertilities: Optional[Tensor] = None,
+        indices: Optional[Tensor] = None,
+        enc_kv: Optional[Tensor] = None,
+        kv_mask: Optional[Tensor] = None,
+        outter_score_mask: Optional[Tensor] = None,
+        sample: bool = False,
+        all_hidden_states: bool = False,
+        num_attn: int = -1,
+        layer_idx: int = -1,
+    ):
+        """
+        text - (batch, maxseqlen)
+        """
+        if self.attn_type == "base":
+            assert (
+                fertilities is None or indices is None
+            ), "The encoding is confused if both fertilities and indices are provided."
+            x, pos_encoding = self.pos_enc(x, fertilities, indices)
+            hidden_state_tuple, attn_tuple, score_mask_tuple = super().forward(
+                x,
+                x_mask=x_mask,
+                enc_kv=enc_kv,
+                kv_mask=kv_mask,
+                outter_score_mask=outter_score_mask,
+                sample=sample,
+                all_hidden_states=all_hidden_states,
+                num_attn=num_attn,
+                layer_idx=layer_idx,
+            )
+        else:
+            if self.attn_type in ["rpr", "rope"]:
+                x, pos_encoding = self.pos_enc(x)
+            else:
+                x = x * self.x_scale
+                pos_encoding = None
+            hidden_state_tuple, attn_tuple, score_mask_tuple = super().forward(
+                x,
+                pos_info=pos_encoding,
+                x_mask=x_mask,
+                enc_kv=enc_kv,
+                kv_mask=kv_mask,
+                outter_score_mask=outter_score_mask,
+                sample=sample,
+                all_hidden_states=all_hidden_states,
+                num_attn=num_attn,
+                layer_idx=layer_idx,
+            )
+
+        return hidden_state_tuple, attn_tuple, score_mask_tuple

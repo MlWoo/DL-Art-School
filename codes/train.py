@@ -192,14 +192,11 @@ class Trainer:
         if search_batch_size_for_bucket:
             if self.train_loader is not None:
                 self.logger.info("Searching for best batch size for train loader if batch mode is bucketed")
-                self.model.set_net_mode("train")
                 self.search_and_sync_batch_size_for_bucket(self.train_loader, "train")
 
             if self.val_loader is not None:
                 self.logger.info("Searching for best batch size for val loader if batch mode is bucketed")
-                self.model.set_net_mode("eval")
                 self.search_and_sync_batch_size_for_bucket(self.val_loader, "val")
-                self.model.set_net_mode("train")
 
         # Evaluators
         self.evaluators = []
@@ -537,7 +534,9 @@ class Trainer:
         pre_batch_size = sampler.bucket_max_samples
         batch_sizes = []
         bucket_boundaries_batch_size_map = {}
-        torch.cuda.set_per_process_memory_fraction(0.75)
+        torch.cuda.set_per_process_memory_fraction(
+            opt_get(self.opt, ["search_batch_size_for_bucket_max_memory_fraction"], 0.75)
+        )
         for bucket_boundary in sampler.bucket_boundaries:
             if pre_bucket_boundary is not None:
                 assert bucket_boundary > pre_bucket_boundary, "bucket_boundary must be greater than pre_bucket_boundary"
@@ -546,9 +545,12 @@ class Trainer:
                 for i in range(4):
                     dummy_input = dataset.create_dummy_input(batch_size, bucket_boundary)
                     self.model.feed_data(dummy_input, self.current_step, perform_micro_batching=False)
-                    is_oom, _ = self.model.optimize_parameters(
-                        self.current_step, return_grad_norms=False, raise_oom=False
-                    )
+                    if phase == "train":
+                        is_oom, _ = self.model.optimize_parameters(
+                            self.current_step, return_grad_norms=False, raise_oom=False
+                        )
+                    else:
+                        is_oom, _ = self.model.test(raise_oom=False)
                     if is_oom:
                         break
                 if not is_oom:
@@ -563,7 +565,7 @@ class Trainer:
                     break
             if not found:
                 raise RuntimeError(
-                    f"No valid batch size found at phase: {phase} for boundary {bucket_boundary}"
+                    f"No valid batch size found at phase: {phase} for boundary {bucket_boundary} "
                     "because of insufficient GPU memory."
                 )
             else:

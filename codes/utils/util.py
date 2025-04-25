@@ -2,6 +2,10 @@ import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel
 
 
+def exists(val):
+    return val is not None
+
+
 def default(val, d):
     return val if val is not None else d
 

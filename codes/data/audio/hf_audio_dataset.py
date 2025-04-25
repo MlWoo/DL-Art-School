@@ -7,15 +7,15 @@ import numpy as np
 import torch
 from datasets import load_dataset, load_from_disk
 from tqdm import tqdm
-from utils import logging
 from utils.io import mfs
+from utils.logging_utils import get_root_logger
 from utils.options import opt_get
 
 from data.audio.io import load_audio
 from data.audio.xdata_abc import AudioABCDataset
 from data.builder import DATASETS
 
-logger = logging.getLogger("base")
+logger = get_root_logger()
 datasets.config.DEFAULT_MAX_BATCH_SIZE = 1000000000
 
 

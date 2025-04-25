@@ -10,12 +10,12 @@ from torch.nn import Module
 from trainer.inject import create_injector
 from trainer.loss_accumulator import LossAccumulator
 from trainer.losses import create_loss
-from trainer.utils import clip_grad_norm, recursively_detach
-from utils import logging
+from trainer.util import clip_grad_norm, recursively_detach
 from utils.distributed import all_gather_list
+from utils.logging_utils import get_root_logger
 from utils.options import opt_get
 
-logger = logging.getLogger("base")
+logger = get_root_logger()
 
 
 # Defines the expected API for a single training step

@@ -583,7 +583,6 @@ if __name__ == "__main__":
 
     meta_dict = dict(path=paths, begin_time=begin_times, duration=durations, text=texts)
     # store_panda(meta_dict)
-    # import pdb; pdb.set_trace()
     # 0.02s/sentence
     with open("temp.json", "w") as f:
         for meta in meta_list:

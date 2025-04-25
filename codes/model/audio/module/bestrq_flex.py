@@ -1,178 +1,51 @@
-import math
-from typing import List, Optional, Tuple, Union
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 import torch
+import torch.nn as nn
 from model.audio.module.util import apply_compile_transformer
 from model.module.base.activation import ACT2FN
 from model.module.base.conv import SamePad
 from model.module.base.mask import sequence_mask
-from model.module.base.positional_encoding import PositionalEncoding, RelativePositionalEncoding
-from model.module.base.transformer import Transformer as TransformerBase
+from model.module.base.transformer import Transformer, TransformerCompile  # noqa F401
 from model.module.base.util import extend2tuple
-from torch import Tensor, nn
 from transformers.modeling_outputs import Wav2Vec2BaseModelOutput
-from utils import logging
+from utils.logging_utils import get_root_logger
 from utils.util import default, print_network
 
-logger = logging.getLogger("base")
+logger = get_root_logger()
 
 
-class Transformer(nn.Module):
-    """Base class for FS2Encoder."""
+@dataclass
+class BestRqConformerEncoderOutput(Wav2Vec2BaseModelOutput):
+    """
+    Base class for models that have been trained with the Wav2Vec2 loss objective.
 
-    def __init__(
-        self,
-        attn_type: str = "base",
-        num_hidden_layers: int = 4,
-        num_attention_heads: int = 2,
-        num_attn_in_dim: int = 512,
-        num_attn_head_dim: int = 256,
-        num_attn_out_dim: int = 512,
-        ffn_dim: int = 1024,
-        attn_func_type: int = 0,
-        ffn_kernel_size: Union[int, Tuple[int, int]] = (9, 1),
-        ffn_act_func: str = "mish",
-        attn_dropout_p: float = 0.0,
-        cxt_dropout_p: float = 0.0,
-        ffn_dropout_p: float = 0.0,
-        pre_LN: bool = False,
-        final_LN: bool = True,
-        use_macaron: bool = False,
-        conv_module_type: Optional[str] = None,
-        conv_module_kernel_size: int = 31,
-        conformer_conv_dropout_p: float = 0.0,
-        pre_conv_module: bool = True,
-        ffn_cat_after: bool = False,
-        causal: bool = False,
-        padding_mode: str = "zeros",
-        chunk_len: Optional[int] = None,
-        norm_groups: int = 0,
-        pos_type: str = "base",
-        pos_dropout_p: float = 0.0,
-        window_size: Optional[int] = None,
-        max_len: int = 1000,
-    ):
-        super().__init__()
-        if attn_type == "base":
-            x_scale = None
-            scaled = False
-            if pos_type == "scaled":
-                scaled = True
-            elif pos_type == "nlp":
-                x_scale = None
-            else:
-                x_scale = 1.0
-            self.pos_enc = PositionalEncoding(
-                num_attn_in_dim, dropout_p=pos_dropout_p, scale=x_scale, scaled=scaled, max_len=max_len
-            )
-        elif attn_type == "rpr":
-            if pos_type == "nlp":
-                x_scale = None
-            else:
-                x_scale = 1.0
-            self.pos_enc = RelativePositionalEncoding(
-                num_attn_head_dim * num_attention_heads,
-                dropout_p=pos_dropout_p,
-                scale=x_scale,
-                max_len=max_len,
-                win_len=window_size,
-                chunk_len=chunk_len,
-            )
-        elif attn_type == "rpr-native":
-            self.x_scale = math.sqrt(num_attn_in_dim)
-        elif attn_type == "wo-pos":
-            self.x_scale = 1.0
-        else:
-            raise ValueError(f"Transformer: {attn_type} is not supported for the moment")
+    Args:
+        last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
+            Sequence of hidden-states at the output of the last layer of the model.
+        extract_features (`torch.FloatTensor` of shape `(batch_size, sequence_length, conv_dim[-1])`):
+            Sequence of extracted feature vectors of the last convolutional layer of the model.
+        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True`
+            is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of the embeddings + one for the output of
+            each layer) of shape `(batch_size, sequence_length, hidden_size)`.
 
-        self.transformer = TransformerBase(
-            in_attn_size=num_attn_in_dim,
-            head_attn_size=num_attn_head_dim,
-            out_attn_size=num_attn_out_dim,
-            hidden_ffn_size=ffn_dim,
-            num_hidden_layers=num_hidden_layers,
-            num_heads=num_attention_heads,
-            out_ffn_size=num_attn_out_dim,
-            attn_type=attn_type,
-            attn_func_type=attn_func_type,
-            ffn_kernel_size=ffn_kernel_size,
-            ffn_act_func=ffn_act_func,
-            attn_dropout_p=attn_dropout_p,
-            cxt_dropout_p=cxt_dropout_p,
-            ffn_dropout_p=ffn_dropout_p,
-            pre_LN=pre_LN,
-            use_macaron=use_macaron,
-            conv_module_type=conv_module_type,
-            conv_module_kernel_size=conv_module_kernel_size,
-            conformer_conv_dropout_p=conformer_conv_dropout_p,
-            pre_conv_module=pre_conv_module,
-            ffn_cat_after=ffn_cat_after,
-            causal=causal,
-            padding_mode=padding_mode,
-            chunk_len=chunk_len,
-            norm_groups=norm_groups,
-            final_LN=final_LN,
-            window_size=window_size,
-            max_len=max_len,
-        )
-        self.attn_type = attn_type
+            Hidden-states of the model at the output of each layer plus the initial embedding outputs.
+        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed
+            or when `config.output_attentions=True`):
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
+            sequence_length)`.
 
-    def forward(
-        self,
-        x: Tensor,
-        extra: Optional[Tensor] = None,
-        x_mask: Optional[Tensor] = None,
-        fertilities: Optional[Tensor] = None,
-        indices: Optional[Tensor] = None,
-        enc_kv: Optional[Tensor] = None,
-        kv_mask: Optional[Tensor] = None,
-        attn_mask: Optional[Tensor] = None,
-        sample: bool = False,
-        return_all: bool = False,
-        return_attn: bool = False,
-        return_attn_num: int = -1,
-        layer_idx: int = -1,
-    ):
-        """
-        text - (batch, maxseqlen)
-        """
-        if self.attn_type == "base":
-            assert (
-                fertilities is None or indices is None
-            ), "The encoding is confused if both fertilities and indices are provided."
-            x, pos_encoding = self.pos_enc(x, fertilities, indices)
-            x, attn_list = self.transformer(
-                x,
-                x_mask=x_mask,
-                enc_kv=enc_kv,
-                kv_mask=kv_mask,
-                attn_mask=attn_mask,
-                sample=sample,
-                return_all=return_all,
-                return_attn=return_attn,
-                return_attn_num=return_attn_num,
-                layer_idx=layer_idx,
-            )
-        else:
-            if self.attn_type == "rpr":
-                x, pos_encoding = self.pos_enc(x)
-            else:
-                x = x * self.x_scale
-                pos_encoding = None
-            x, attn_list = self.transformer(
-                x,
-                pos_info=pos_encoding,
-                x_mask=x_mask,
-                enc_kv=enc_kv,
-                kv_mask=kv_mask,
-                attn_mask=attn_mask,
-                sample=sample,
-                return_all=return_all,
-                return_attn=return_attn,
-                return_attn_num=return_attn_num,
-                layer_idx=layer_idx,
-            )
-        return x, attn_list
+            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
+            heads.
+    """
+
+    last_hidden_state: Optional[torch.FloatTensor] = None
+    extract_features: Optional[torch.FloatTensor] = None
+    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
+    score_mask: Optional[Tuple[torch.BoolTensor, ...]] = None
 
 
 class Conv1dSubsampling(nn.Module):
@@ -381,6 +254,7 @@ class BestRqConformerEncoder(nn.Module):
         codebook_dim: int = -1,
         channel_last: bool = True,
         conv_hidden_act: str = "gelu",
+        stream_chunk_size: Optional[int] = None,
         preconformer_input_feature_projection: bool = False,  # unused
         no_scale_embedding: bool = False,  # unused
         rotary_embedding_base: int = 10000,  # unused
@@ -403,7 +277,7 @@ class BestRqConformerEncoder(nn.Module):
             input_dim = in_attn_size
 
         attn_func_type = 1 if causal else 0
-        attn_func_type = attn_func_type if window_size is None else attn_func_type + 1
+        attn_func_type = attn_func_type if window_size is None else attn_func_type + 2
 
         conv_hidden_size = extend2tuple(conv_hidden_size, sub_layers)
         if num_preconformer_layers > 0:
@@ -419,37 +293,9 @@ class BestRqConformerEncoder(nn.Module):
                 logger.warning("Pre Conformer should be with relative positional encoding")
             else:
                 pre_conformer_attn_type = attn_type
-
-            self.pre_conformer = Transformer(
-                attn_type=pre_conformer_attn_type,
-                num_hidden_layers=num_preconformer_layers,
-                num_attention_heads=num_preconformer_heads,
-                num_attn_in_dim=num_attn_in_dim,
-                num_attn_out_dim=num_attn_out_dim,
-                num_attn_head_dim=num_attn_head_dim,
-                ffn_dim=preconformer_ffn_dim,
-                attn_func_type=attn_func_type,
-                ffn_kernel_size=1,
-                ffn_act_func=hidden_act,
-                attn_dropout_p=attention_dropout,
-                cxt_dropout_p=cxt_dropout_p,
-                ffn_dropout_p=ffn_dropout_p,
-                pos_dropout_p=pos_dropout_p,
-                pre_LN=True,
-                final_LN=False,
-                use_macaron=True,
-                conv_module_type="original",
-                conv_module_kernel_size=conv_module_kernel_size,
-                causal=causal,
-                padding_mode=padding_mode,
-                window_size=window_size,
-                max_len=max_source_positions,
-                norm_groups=norm_groups,
-            )
             input_dim = num_attn_in_dim
         else:
             self.proj_linear = None
-            self.pre_conformer = None
 
         if sub_type == "2d":
             self.conv_subsample = Conv2dSubsampling(
@@ -480,6 +326,38 @@ class BestRqConformerEncoder(nn.Module):
             self.reduction_factors = 4
         else:
             self.reduction_factors = 2
+
+        if num_preconformer_layers > 0:
+            self.pre_conformer = Transformer(
+                attn_type=pre_conformer_attn_type,
+                num_hidden_layers=num_preconformer_layers,
+                num_attention_heads=num_preconformer_heads,
+                num_attn_in_dim=num_attn_in_dim,
+                num_attn_out_dim=num_attn_out_dim,
+                num_attn_head_dim=num_attn_head_dim,
+                ffn_dim=preconformer_ffn_dim,
+                attn_func_type=attn_func_type,
+                ffn_kernel_size=1,
+                ffn_act_func=hidden_act,
+                attn_dropout_p=attention_dropout,
+                cxt_dropout_p=cxt_dropout_p,
+                ffn_dropout_p=ffn_dropout_p,
+                pos_dropout_p=pos_dropout_p,
+                pre_LN=True,
+                final_LN=False,
+                use_macaron=True,
+                conv_module_type="original",
+                conv_module_kernel_size=conv_module_kernel_size,
+                causal=causal,
+                padding_mode=padding_mode,
+                stream_chunk_size=stream_chunk_size * self.reduction_factors if stream_chunk_size is not None else None,
+                window_size=window_size * self.reduction_factors if window_size is not None else None,
+                max_len=max_source_positions,
+                norm_groups=norm_groups,
+            )
+        else:
+            self.pre_conformer = None
+
         num_attn_in_dim = num_attn_out_dim = hidden_size
         num_attn_head_dim = num_attn_in_dim // num_attention_heads
         ffn_dim = default(ffn_dim, num_attn_in_dim * 4)
@@ -510,7 +388,8 @@ class BestRqConformerEncoder(nn.Module):
             conformer_conv_dropout_p=conformer_conv_dropout_p,
             causal=causal,
             padding_mode=padding_mode,
-            chunk_len=chunk_len,
+            chunkwise_size=chunk_len,
+            stream_chunk_size=stream_chunk_size,
             window_size=window_size,
             max_len=max_source_positions // self.reduction_factors,
             norm_groups=norm_groups,
@@ -523,17 +402,18 @@ class BestRqConformerEncoder(nn.Module):
             self.output_dim = hidden_size
         self.channel_last = channel_last
         self.hidden_size = hidden_size
+        self.compile = compile
         self.compiled = False
 
     def apply_compile(self):
-        if not self.compiled:
+        if self.compile and not self.compiled:
             apply_compile_transformer(self.conv_subsample)
             apply_compile_transformer(self.conformer)
             if self.pre_conformer is not None:
                 apply_compile_transformer(self.pre_conformer)
             self.compiled = True
 
-    def forward(self, input_values, input_lengths=None, layer_idx: int = -1, return_attn_num: int = -1):
+    def forward(self, input_values, input_lengths=None, layer_idx: int = -1, num_attn: int = -1):
         if not self.channel_last:
             input_values = input_values.permute(0, 2, 1)
 
@@ -559,19 +439,21 @@ class BestRqConformerEncoder(nn.Module):
                 features_mask.shape[1] == input_features.shape[1]
             ), f"features mask {features_mask.shape}, features input {input_features.shape}"
 
-        output_values, attn_list = self.conformer(
-            x=input_features, x_mask=features_mask, layer_idx=layer_idx, return_attn_num=return_attn_num
+        output_values, attn_tuple, score_mask_tuple = self.conformer(
+            x=input_features, x_mask=features_mask, layer_idx=layer_idx, num_attn=num_attn
         )
+        last_hidden_state = output_values[-1]
         if layer_idx == -1:
-            output_values = self.output_proj(output_values)
+            last_hidden_state = self.output_proj(last_hidden_state)
         if not self.channel_last:
-            output_values = output_values.permute(0, 2, 1)
+            last_hidden_state = last_hidden_state.permute(0, 2, 1)
 
-        return Wav2Vec2BaseModelOutput(
-            last_hidden_state=output_values,
+        return BestRqConformerEncoderOutput(
+            last_hidden_state=last_hidden_state,
             extract_features=input_features,
-            hidden_states=None,
-            attentions=None,
+            hidden_states=output_values,
+            attentions=attn_tuple,
+            score_mask=score_mask_tuple,
         )
 
 

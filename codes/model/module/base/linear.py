@@ -89,7 +89,16 @@ class LinearBlock(nn.Module):
             elif op_name in ACT2FN.keys():
                 if disable_afn:
                     continue
-                op = ACT2FN[op_name]()
+                if op_name == "glu":
+                    op = Linear(norm_features, 2 * norm_features, channel_last=channel_last)
+                    self.op_list.append(op)
+                    valid_ops_seq.append("glu_linear")
+                    if channel_last:
+                        op = ACT2FN[op_name](dim=-1)
+                    else:
+                        op = ACT2FN[op_name](dim=1)
+                else:
+                    op = ACT2FN[op_name]()
             else:
                 raise ValueError(f"{op_name} is not supported!")
             if hasattr(op, "inplace") and op.inplace:

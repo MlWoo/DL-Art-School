@@ -18,7 +18,7 @@ from .mask import pad_list, sequence_mask
 class PositionalEncoding(nn.Module):
     """Positional encoding.
     Args:
-        hidden_channels (int): Embedding dimension.
+        hidden_channels (int): encoding dimension.
         dropout_p (float): Dropout rate.
         max_len (int): Maximum input length.
         reverse (bool): Whether to reverse the input position.
@@ -78,7 +78,7 @@ class PositionalEncoding(nn.Module):
     def fertilize_pe(self, pe, durations):
         """
             :param durations: [B, N]
-            :return positional_embedding_outputs: [B, T, positional_hidden]
+            :return positional_encoding_outputs: [B, T, positional_hidden]
         """
 
         B = durations.size(0)
@@ -93,9 +93,9 @@ class PositionalEncoding(nn.Module):
         ids = torch.arange(max_len, device=durations.device).expand(B, N, max_len)
         pos_mask = (ids < pos_durations.view(B, N, 1))
         pos_ids = ids[pos_mask].view(-1, max_len)  # [B, T]
-        positional_embedding_outputs = pe(pos_ids)
+        positional_encoding_outputs = pe(pos_ids)
 
-        return positional_embedding_outputs
+        return positional_encoding_outputs
     '''
 
     def extend_pe(self, max_len, dtype, device):
@@ -178,13 +178,13 @@ class RelativePositionalEncoding(nn.Module):
     Details can be found in https://github.com/espnet/espnet/pull/2816.
     See : Appendix B in https://arxiv.org/abs/1901.02860
     Args:
-        hidden_channels (int): Embedding dimension.
+        hidden_channels (int): Encoding dimension.
         dropout_p (float): Dropout rate.
         max_len (int): Maximum input length.
     """
 
     def __init__(
-        self, hidden_channels, dropout_p, scale=None, scaled=False, max_len=5000, win_len=None, chunk_len=None
+        self, hidden_channels, dropout_p, scale=None, scaled=False, max_len=5000, win_len=None, chunkwise_len=None
     ):
         """Construct an PositionalEncoding object."""
         super().__init__()
@@ -195,14 +195,14 @@ class RelativePositionalEncoding(nn.Module):
             self.x_scale = math.sqrt(self.hidden_channels) if scale is None else scale
         self.dropout = Dropout(p=dropout_p, inplace=False)  # if dropout_p > 0.0 else lambda x: x
         self.pe = None
-        if chunk_len is not None:
-            self.extend_pe(torch.tensor(0.0).expand(1, chunk_len))
+        if chunkwise_len is not None:
+            self.extend_pe(torch.tensor(0.0).expand(1, chunkwise_len))
         elif win_len is not None:
             self.extend_pe(torch.tensor(0.0).expand(1, win_len))
         else:
             self.extend_pe(torch.tensor(0.0).expand(1, max_len))
         self.win_len = win_len
-        self.chunk_len = chunk_len
+        self.chunkwise_len = chunkwise_len
 
     @torch.no_grad()
     def extend_pe(self, x):
@@ -210,8 +210,8 @@ class RelativePositionalEncoding(nn.Module):
         if self.pe is not None:
             # self.pe contains both positive and negative parts
             # the length of self.pe is 2 * input_len - 1
-            if self.chunk_len is not None:
-                pe_len = 2 * self.chunk_len - 1
+            if self.chunkwise_len is not None:
+                pe_len = 2 * self.chunkwise_len - 1
             elif self.win_len is not None:
                 pe_len = 2 * self.win_len - 1
             else:
@@ -251,7 +251,7 @@ class RelativePositionalEncoding(nn.Module):
         """
         self.extend_pe(x)
         with torch.no_grad():
-            if self.chunk_len is not None:
+            if self.chunkwise_len is not None:
                 pos_emb = self.pe
             elif self.win_len is not None:
                 diff_len = x.size(1) - self.win_len
@@ -266,3 +266,36 @@ class RelativePositionalEncoding(nn.Module):
 
         x = x * self.x_scale
         return self.dropout(x), self.dropout(pos_emb)
+
+
+class RotaryPositionalEncoding(nn.Module):
+    """Rotary positional encoding
+    Reference : https://blog.eleuther.ai/rotary-embeddings/ Paper: https://arxiv.org/pdf/2104.09864.pdf
+    """
+
+    def __init__(self, hidden_size, base: int = 10000):
+        super().__init__()
+        dim = hidden_size
+
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.int64).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
+        self.cached_sequence_length = None
+        self.cached_rotary_positional_encoding = None
+
+    def forward(self, hidden_states):
+        sequence_length = hidden_states.shape[1]
+
+        if sequence_length == self.cached_sequence_length and self.cached_rotary_positional_encoding is not None:
+            return self.cached_rotary_positional_encoding
+
+        self.cached_sequence_length = sequence_length
+        # encodings are computed in the dtype of the inv_freq constant
+        time_stamps = torch.arange(sequence_length).type_as(self.inv_freq)
+        freqs = torch.einsum("i,j->ij", time_stamps, self.inv_freq)
+        encodings = torch.cat((freqs, freqs), dim=-1)
+
+        cos_encodings = encodings.cos()[:, None, None, :]
+        sin_encodings = encodings.sin()[:, None, None, :]
+        # Computed encodings are cast to the dtype of the hidden state inputs
+        self.cached_rotary_positional_encoding = torch.stack([cos_encodings, sin_encodings]).type_as(hidden_states)
+        return self.cached_rotary_positional_encoding
