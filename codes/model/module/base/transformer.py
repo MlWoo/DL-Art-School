@@ -571,13 +571,10 @@ class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
                             score_mask = torch.logical_or(chunk_score_mask, inner_score_mask)
                         else:
                             score_mask = chunk_score_mask
-
-                        if outter_score_mask is not None:
-                            score_mask = torch.logical_and(score_mask, outter_score_mask)
                     else:
                         raise NotImplementedError("Attention with channels last is not supported.")
                 else:
-                    score_mask = chunk_score_mask
+                    score_mask = inner_score_mask
 
             if outter_score_mask is not None and score_mask is not None:
                 score_mask = torch.logical_and(score_mask, outter_score_mask)

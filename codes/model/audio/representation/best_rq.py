@@ -25,7 +25,7 @@ class BestRqFramework(BaseModule):
         num_codebooks: int = 16,
         codebook_size: int = 4096,
         codebook_dim: int = 512,
-        chunk_len: Optional[int] = None,
+        chunkwise_size: Optional[int] = None,
         encoder: Optional[dict] = None,
         enable_input_norm: bool = False,
         mask_time: int = 400,
@@ -75,7 +75,7 @@ class BestRqFramework(BaseModule):
                 **kwargs,
             )
         else:
-            encoder_additional_parameters = {"input_dim": input_dim, "chunk_len": chunk_len}
+            encoder_additional_parameters = {"input_dim": input_dim, "chunkwise_size": chunkwise_size}
             self.encoder = construct_from_kwargs(encoder, additional_parameters=encoder_additional_parameters)
 
         self.codebook_size = codebook_size
@@ -100,7 +100,7 @@ class BestRqFramework(BaseModule):
 
         self.num_time_steps = int(mask_time // (stride_time * self.reduction_factors))
         self.mask_prob = mask_prob
-        self.chunk_len = chunk_len
+        self.chunkwise_size = chunkwise_size
 
     def visual_cfg(self):
         plot_cfg = dict(
@@ -127,7 +127,7 @@ class BestRqFramework(BaseModule):
                     "attn",
                 ],
                 shapes_keys=[
-                    ("input_lengths", "input_lengths"),
+                    ("reduced_lengths", "reduced_lengths"),
                 ],
                 t_labels=["head"],
                 l_labels=["layers"],
@@ -142,7 +142,7 @@ class BestRqFramework(BaseModule):
                     "score_mask",
                 ],
                 shapes_keys=[
-                    ("input_lengths", "input_lengths"),
+                    ("reduced_lengths", "reduced_lengths"),
                 ],
                 t_labels=["head"],
                 l_labels=["layers"],
@@ -229,9 +229,9 @@ class BestRqFramework(BaseModule):
                         * (4 * log_rows)
                     )
 
-            if self.chunk_len is not None:
-                chunks = (num_steps - 1) // self.chunk_len + 1
-                new_num_steps = chunks * self.chunk_len
+            if self.chunkwise_size is not None:
+                chunks = (num_steps - 1) // self.chunkwise_size + 1
+                new_num_steps = chunks * self.chunkwise_size
                 if new_num_steps != num_steps:
                     input_values = F.pad(input_values, [0, new_num_steps - num_steps])
                     num_steps = new_num_steps
@@ -278,6 +278,7 @@ class BestRqFramework(BaseModule):
             self.debug_info["input_size"] = input_values.shape[0] * input_values.shape[1]
             self.debug_info["input_length"] = input_values.shape[1]
             self.debug_info["attn"] = torch.stack([attn for attn in encoder_out.attentions if attn is not None], dim=1)
+            self.debug_info["reduced_lengths"] = input_lengths.detach() // self.reduction_factors
             self.debug_info["score_mask"] = torch.stack(
                 [mask for mask in encoder_out.score_mask if mask is not None], dim=1
             )
@@ -340,7 +341,7 @@ class BestRqCTC(BestRqFramework):
         num_codebooks: int = 16,
         codebook_size: int = 4096,
         codebook_dim: int = 512,
-        chunk_len: Optional[int] = None,
+        chunkwise_size: Optional[int] = None,
         encoder=dict(),
         decoder=None,
         enable_input_norm: bool = False,
@@ -366,7 +367,7 @@ class BestRqCTC(BestRqFramework):
             num_codebooks,
             codebook_size,
             codebook_dim,
-            chunk_len,
+            chunkwise_size,
             encoder,
             enable_input_norm,
             mask_time,
@@ -463,9 +464,9 @@ class BestRqCTC(BestRqFramework):
     def forward_body(self, input_values, input_lengths, labels):
         with torch.no_grad():
             batch_size, dim, num_steps = input_values.size()
-            if self.chunk_len is not None:
-                chunks = (num_steps - 1) // self.chunk_len + 1
-                new_num_steps = chunks * self.chunk_len
+            if self.chunkwise_size is not None:
+                chunks = (num_steps - 1) // self.chunkwise_size + 1
+                new_num_steps = chunks * self.chunkwise_size
                 if new_num_steps != num_steps:
                     input_values = F.pad(input_values, [0, new_num_steps - num_steps])
                     num_steps = new_num_steps

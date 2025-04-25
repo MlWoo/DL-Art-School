@@ -51,10 +51,21 @@ The repository is used to train the audio model and much more clean and organize
 
 - [x] Support tensorboard logging.
 - [x] Support wandb logging.
+- [x] Support log images.
 - [x] Support attention visualization.
 - [ ] Save checkpoint asynchronously.
 - [ ] Support Top-K checkpoint saving.
 
+
+### Attention Masks
+
+check attention and score mask visualization in folder ![](res/)
+
+- [x] Support null attention mask.
+- [x] Support AR attention mask.
+- [x] Support window attention mask.
+- [x] Support stream-chunk attention mask.
+- [ ] Support chunk-wise attention mask.
 
 # Deep Learning Art School
 

@@ -249,7 +249,7 @@ class BestRqConformerEncoder(nn.Module):
         window_size: int = 64,
         in_attn_size: Optional[int] = None,
         padding_mode: str = "zeros",
-        chunk_len: Optional[int] = None,
+        chunkwise_size: Optional[int] = None,
         norm_groups: int = 8,
         codebook_dim: int = -1,
         channel_last: bool = True,
@@ -354,6 +354,7 @@ class BestRqConformerEncoder(nn.Module):
                 window_size=window_size * self.reduction_factors if window_size is not None else None,
                 max_len=max_source_positions,
                 norm_groups=norm_groups,
+                chunkwise_size=chunkwise_size * self.reduction_factors if chunkwise_size is not None else None,
             )
         else:
             self.pre_conformer = None
@@ -362,9 +363,9 @@ class BestRqConformerEncoder(nn.Module):
         num_attn_head_dim = num_attn_in_dim // num_attention_heads
         ffn_dim = default(ffn_dim, num_attn_in_dim * 4)
 
-        if chunk_len is not None:
-            chunk_len = chunk_len // self.reduction_factors
-        self.chunk_len = chunk_len
+        if chunkwise_size is not None:
+            chunkwise_size = chunkwise_size // self.reduction_factors
+        self.chunkwise_size = chunkwise_size
 
         self.conformer = Transformer(
             attn_type=attn_type,
@@ -388,7 +389,7 @@ class BestRqConformerEncoder(nn.Module):
             conformer_conv_dropout_p=conformer_conv_dropout_p,
             causal=causal,
             padding_mode=padding_mode,
-            chunkwise_size=chunk_len,
+            chunkwise_size=chunkwise_size,
             stream_chunk_size=stream_chunk_size,
             window_size=window_size,
             max_len=max_source_positions // self.reduction_factors,
@@ -426,7 +427,8 @@ class BestRqConformerEncoder(nn.Module):
         if self.proj_linear is not None:
             input_values = self.proj_linear(input_values)
         if self.pre_conformer is not None:
-            input_values, _ = self.pre_conformer(input_values, x_mask=mask)
+            input_values, _, _ = self.pre_conformer(input_values, x_mask=mask)
+            input_values = input_values[-1]
 
         input_features = self.conv_subsample(input_values)
 
@@ -470,7 +472,7 @@ if __name__ == "__main__":
     num_hidden_layers = 24
     hidden_size = 1024
     attn_type = "wo-pos"
-    chunk_len = 800
+    chunkwise_size = 800
     causal = True
     norm_groups = 8
 
@@ -487,7 +489,7 @@ if __name__ == "__main__":
                 hidden_size=hidden_size,
                 num_hidden_layers=num_hidden_layers,
                 window_size=window_size,
-                chunk_len=chunk_len,
+                chunkwise_size=chunkwise_size,
                 causal=causal,
                 norm_groups=norm_groups,
             ).cuda()

@@ -530,7 +530,7 @@ def plot_images(
                 ax_o.axis("off")
         # plt.tight_layout()
         buffer.seek(0)
-        plt.savefig(buffer, format="jpg", bbox_inches="tight")
+        plt.savefig(buffer, format="jpg", bbox_inches="tight", dpi=200)
         buffer.seek(0)
         image = PIL.Image.open(buffer)
         image = ToTensor()(image)
