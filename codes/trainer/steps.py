@@ -15,8 +15,6 @@ from utils.distributed import all_gather_list
 from utils.logging_utils import get_root_logger
 from utils.options import opt_get
 
-logger = get_root_logger()
-
 
 # Defines the expected API for a single training step
 class ConfigurableStep(Module):
@@ -65,6 +63,7 @@ class ConfigurableStep(Module):
 
         self.losses = OrderedDict(losses)
         self.step_name = step_name
+        self.logger = get_root_logger()
 
     def get_network_for_name(self, name):
         return (
@@ -127,7 +126,7 @@ class ConfigurableStep(Module):
                         if v.PARAM_GROUP in optim_params.keys():
                             param_group = v.PARAM_GROUP
                         else:
-                            logger.warning(
+                            self.logger.warning(
                                 f"Model specifies a custom param group {v.PARAM_GROUP} which is not configured. "
                                 f"The same LR will be used for all parameters."
                             )
@@ -136,7 +135,7 @@ class ConfigurableStep(Module):
                         optim_params[param_group]["params"].append(v)
                     else:
                         if self.env["rank"] <= 0:
-                            logger.warning("Params [{:s}] will not optimize.".format(k))
+                            self.logger.warning("Params [{:s}] will not optimize.".format(k))
             params_names_notweights = sorted(list(param_names_notweights))
             params_notweights = [param_map[k] for k in params_names_notweights]
             params_names_weights = sorted(list(all_param_names ^ param_names_notweights))
@@ -314,6 +313,7 @@ class ConfigurableStep(Module):
         reuse_out=None,
         raise_oom=None,
     ):
+        local_raise_oom = raise_oom
         raise_oom = self.raise_oom if raise_oom is None else raise_oom
         local_state = {}  # <-- Will store the entire local state to be passed to injectors & losses.
         new_state = {}  # <-- Will store state values created by this step for returning to ExtensibleTrainer.
@@ -434,18 +434,33 @@ class ConfigurableStep(Module):
 
                 # Get dem grads!
                 step = "backward"
-                try:
-                    self.scaler.scale(total_loss).backward()
-                except RuntimeError as e:
-                    if "out of memory" in str(e):
-                        if raise_oom:
+                if local_raise_oom is not None and not local_raise_oom:
+                    with training_net.no_sync():
+                        try:
+                            self.scaler.scale(total_loss).backward()
+                        except RuntimeError as e:
+                            if "out of memory" in str(e):
+                                if raise_oom:
+                                    raise e
+                                ooms += 1
+                            else:
+                                raise e
+                        is_oom = self.check_oom(training_net, ooms, ooms_info, step, training_name)  # DDP hangs
+                        if is_oom:
+                            return is_oom, None
+                else:
+                    try:
+                        self.scaler.scale(total_loss).backward()
+                    except RuntimeError as e:
+                        if "out of memory" in str(e):
+                            if True or raise_oom:
+                                raise e
+                            ooms += 1
+                        else:
                             raise e
-                        ooms += 1
-                    else:
-                        raise e
-                is_oom = self.check_oom(training_net, ooms, ooms_info, step, training_name)
-                if is_oom:
-                    return is_oom, None
+                    is_oom = self.check_oom(training_net, ooms, ooms_info, step, training_name)  # DDP hangs
+                    if is_oom:
+                        return is_oom, None
 
                 self.grads_generated = True
                 # Reset nan_loss_counter
@@ -563,7 +578,7 @@ class ConfigurableStep(Module):
 
     def _postprocess_exception(self, inj, info=None):
         if info is not None:
-            logger.warn(info)
+            self.logger.warn(info)
         self._call_task_method(inj, "empty_buffer", check=False)
 
     def get_metrics(self):

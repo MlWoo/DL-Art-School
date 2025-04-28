@@ -1,5 +1,4 @@
 import copy
-import logging
 import os
 from math import sqrt
 from pathlib import Path
@@ -21,6 +20,7 @@ from trainer.loss_accumulator import InfStorageLossAccumulator
 
 # from trainer.injectors.audio_injectors import normalize_mel
 from trainer.steps import ConfigurableStep
+from utils import logging
 from utils.options import opt_get
 
 
@@ -150,6 +150,7 @@ class ExtensibleTrainer(BaseTrainer):
                         device_ids=[torch.cuda.current_device()],
                         output_device=torch.cuda.current_device(),
                         find_unused_parameters=opt_get(opt, ["ddp_find_unused_parameters"], False),
+                        gradient_as_bucket_view=True,
                     )
                     # DDP graphs cannot be used with gradient checkpointing unless you use find_unused_parameters=True,
                     # which does not work with this trainer (as stated above). However, if the graph is not subject
@@ -207,17 +208,22 @@ class ExtensibleTrainer(BaseTrainer):
         # Setting this to false triggers SRGAN to call the models update_model() function on the first iteration.
         self.updated = True
 
-    def store_run_info(self, epoch, step, will_log=False):
+    def feed_run_info(self, epoch, step, will_log=False, will_visual=False, **kwargs):
         # Some generators can do their own metric logging.
         for net_name, net in self.networks.items():
-            if hasattr(net.module, "store_run_info"):
+            if hasattr(net.module, "feed_run_info"):
                 lr = self.get_current_learning_rate()[0]
-                net.module.store_run_info(epoch=epoch, step=step, will_log=will_log, lr=lr)
+                net.module.feed_run_info(
+                    epoch=epoch, step=step, will_log=will_log, will_visual=will_visual, lr=lr, **kwargs
+                )
 
     def apply_compile(self):
         for net in self.networks.values():
             if hasattr(net.module, "apply_compile"):
                 net.module.apply_compile()
+
+    def create_dummy_input(self, batch_size, bucket_boundary):
+        pass
 
     def feed_data(self, data, step, reduce_batch_factor=None, need_GT=True, perform_micro_batching=True, profile=False):
         self.env["step"] = step
@@ -459,6 +465,7 @@ class ExtensibleTrainer(BaseTrainer):
             "visuals" in self.opt["logger"].keys()
             and self.rank <= 0
             and it % self.opt["logger"]["visual_debug_rate"] == 0
+            and raise_oom is None
         ):
 
             def fix_image(img):

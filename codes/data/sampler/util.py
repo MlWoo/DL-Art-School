@@ -31,7 +31,7 @@ def chunk(iterable, chunk_size, rank=0):
                 if isinstance(record, (list, tuple)) and isinstance(record[0], torch.Tensor):
                     record = record[rank].tolist()
                 else:
-                    assert rank == 1, "rank should be 0 when record is not a tensor"
+                    assert rank == 0, "rank should be 0 when record is not a tensor"
             ret.append(record)
         if len(ret) == chunk_size:
             yield ret

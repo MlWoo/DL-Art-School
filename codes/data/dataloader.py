@@ -11,6 +11,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from utils.distributed import get_dist_info
+from utils.logging_utils import get_root_logger
 from utils.seed import set_random_seed
 
 from data.sampler import LengthChunkSampler
@@ -70,6 +71,7 @@ class BackgroundConsumer(Thread):
 
 class BufferedIteratorDataloader(object):
     def __init__(self, size, iterable, collate_fn=None, process_device=-1, predefine_len=False):
+        self.logger = get_root_logger()
         self._queue = queue.Queue(size)
         self._iterable = iterable
         self._consumer = None
@@ -126,7 +128,7 @@ class BufferedIteratorDataloader(object):
         if self._queue.qsize() < min(2, max(1, self._queue.maxsize // 2)):
             if time.time() - self.start_time > 5 * 60:
                 if self.warning_time is None or time.time() - self.warning_time > 15 * 60:
-                    print(
+                    self.logger.warning(
                         "Data loading buffer is empty or nearly empty. This may "
                         "indicate a data loading bottleneck, and increasing the "
                         "number of workers (--num-workers) may help."
@@ -154,10 +156,10 @@ class BufferedIteratorDataloader(object):
         return self._iterable.collate_fn
 
 
-def file_worker_init_fn(worker_id, num_workers, rank, seed, cpu_affinity=False):
+def file_worker_init_fn(worker_id, num_workers, rank, seed, cpu_affinity=False, logger=None):
     # The seed of each worker equals to
     # num_worker * rank + worker_id + user_seed
-    print(f"file worker init ====== worker_id: {worker_id} num_workers: {num_workers}, rank: {rank} ======")
+    logger.info(f"file worker init ====== worker_id: {worker_id} num_workers: {num_workers}, rank: {rank} ======")
     # worker_seed = num_workers * rank + worker_id + seed
     # np.random.seed(worker_seed)
     # random.seed(worker_seed)
@@ -278,7 +280,7 @@ class SubDataloaders(object):
                 self.sampler_iterable = iter(i_r)
             else:
                 remainder_len = -1
-            print(f"[Debug] ---> reset: {reset}, remainder len {remainder_len}")
+                self.logger.info(f"[Debug] ---> reset: {reset}, remainder len {remainder_len}")
         if reset:
             self.sampler.iter_is_null = True
         else:
@@ -347,6 +349,7 @@ class GeneralSeqDataloader:
         Returns:
         DataLoader: PyTorch dataloaders.
         """
+        self.logger = get_root_logger()
         self.phase_named_dataloaders = dict()
         if kwargs.get("world_size", None) is None:
             rank, world_size = get_dist_info()
@@ -410,6 +413,11 @@ class GeneralSeqDataloader:
         bucket_max_samples = (
             kwargs.get("bucket_max_samples", 64) if sampler_opt is None else sampler_opt.get("bucket_max_samples", 64)
         )
+        bucketed_batch_size_map = (
+            kwargs.get("bucketed_batch_size_map", None)
+            if sampler_opt is None
+            else sampler_opt.get("bucketed_batch_size_map", None)
+        )
 
         for phase, map_dataset_indice in dataset.phases_indice_dict.items():
             if phase == "train":
@@ -453,6 +461,7 @@ class GeneralSeqDataloader:
                 bucket_max_batch_tokens=bucket_max_batch_tokens,
                 bucket_min_samples=bucket_min_samples,
                 bucket_max_samples=bucket_max_samples,
+                bucketed_batch_size_map=bucketed_batch_size_map,
             )
             sampler.finalize_dataset(dataset=dataset, indices=map_dataset_indice, verbose=True)
             if sampler.batch_mode == "bucketed":
@@ -468,8 +477,14 @@ class GeneralSeqDataloader:
                 worker_init_fn = pool_worker_init_fn
             else:
                 worker_init_fn = file_worker_init_fn
-            init_fn = partial(worker_init_fn, num_workers=i_workers_per_gpu, rank=rank, seed=seed, cpu_affinity=True)
-
+            init_fn = partial(
+                worker_init_fn,
+                num_workers=i_workers_per_gpu,
+                rank=rank,
+                seed=seed,
+                cpu_affinity=True,
+                logger=self.logger,
+            )
             if i_workers_per_gpu == 0:
                 multiprocessing_context = None
                 persistent_workers = False

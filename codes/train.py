@@ -8,6 +8,7 @@ import maybe_bnb
 import torch
 import torch.distributed as dist
 import utils
+from model.builder import build_stat
 from tqdm import tqdm
 from trainer.eval.evaluator import create_evaluator
 from trainer.extensible_trainer import ExtensibleTrainer
@@ -44,7 +45,6 @@ class Trainer:
                 resume_state = None
         else:
             resume_state = None
-
         # mkdir and loggers
         if self.rank <= 0:  # normal training (self.rank -1) OR distributed training (self.rank 0)
             if resume_state is None:
@@ -119,6 +119,8 @@ class Trainer:
 
         # create model
         self.model = ExtensibleTrainer(opt)
+        if opt_get(opt, ["apply_compile"], False):
+            self.model.apply_compile()
 
         # create train and val dataloader
         dataset_ratio = 1  # enlarge the size of each epoch
@@ -270,6 +272,11 @@ class Trainer:
         self.current_step += 1
         self.total_training_data_encountered += batch_size
         will_log = self.current_step % opt["logger"]["print_freq"] == 0
+        will_visual = (
+            "visuals" in self.opt["logger"].keys()
+            and self.rank <= 0
+            and self.current_step % self.opt["logger"]["visual_debug_rate"] == 0
+        )
 
         # training
         if self.profile:
@@ -279,7 +286,7 @@ class Trainer:
         else:
             lr_update_time = -1.0  # noqa: F841
 
-        self.model.store_run_info(step=self.current_step, epoch=self.epoch, will_log=will_log)
+        self.model.feed_run_info(step=self.current_step, epoch=self.epoch, will_log=will_log, will_visual=will_visual)
         if opt_get(self.opt, ["oom", "raise_error"], False):
             self.model.feed_data(train_data, self.current_step, profile=self.profile)
             if self.profile:
@@ -437,7 +444,8 @@ class Trainer:
                 self.val_loader.set_epoch(0)
             for val_data in tqdm(self.val_loader):
                 self.model.feed_data(val_data, self.current_step, perform_micro_batching=False)
-                metrics.append(self.model.test())
+                is_oom, result = self.model.test()
+                metrics.append(result)
 
             reduced_metrics = {}
             for metric in metrics:
@@ -510,6 +518,28 @@ class Trainer:
                 yield self.model
                 self.do_step(train_data)
 
+    def online_stat(self):
+        if self.rank <= 0:
+            self.logger.info("Statistic from epoch: {:d}, iter: {:d}".format(self.start_epoch, self.current_step))
+        online_stat = opt_get(self.opt, ["online_stat"], None)
+        if online_stat is not None and opt_get(online_stat, ["enabled"], False):
+            stat = build_stat(online_stat["stat_cfg"])
+            stat_batches = opt_get(online_stat, ["stat_batches"], 100)
+            save_dir = opt_get(online_stat, ["save_dir"], "stat/dir")
+            os.makedirs(save_dir, exist_ok=True)
+            if hasattr(self.train_loader, "set_epoch"):
+                self.train_loader.set_epoch(0)
+            tq_ldr = tqdm(self.train_loader)
+
+            cnt = 0
+            for train_data in tq_ldr:
+                stat.update(train_data)
+                cnt += 1
+                if cnt > stat_batches:
+                    break
+            stat.save(cnt, save_dir=save_dir)
+            self.logger.info(f"Online stat saved at {save_dir}")
+
     def search_and_sync_batch_size_for_bucket(self, dataloader, phase):
         sampler = dataloader.sampler
         if sampler.batch_mode != "bucketed":
@@ -530,35 +560,86 @@ class Trainer:
         assert hasattr(sampler, "bucket_min_samples"), "sampler must have bucket_min_batch_size attribute"
         assert hasattr(dataset, "create_dummy_input"), "dataset must have create_dummy_input attribute"
 
+        def check_oom(batch_size, bucket_boundary):
+            dummy_input = dataset.create_dummy_input(batch_size, bucket_boundary)
+            self.model.feed_data(dummy_input, self.current_step, perform_micro_batching=False)
+            if phase == "train":
+                is_oom, _ = self.model.optimize_parameters(self.current_step, return_grad_norms=False, raise_oom=False)
+            else:
+                is_oom, _ = self.model.test(raise_oom=False)
+            return is_oom
+
+        def search_batch_size(batch_size_start, bucket_boundary):
+            batch_size = batch_size_start
+            is_oom = False
+            step = 1
+            while not is_oom:
+                is_oom = check_oom(batch_size, bucket_boundary)
+                if not is_oom:
+                    step *= 2
+                batch_size += step
+
+            trials = 3
+            while is_oom or batch_size == 0:
+                is_oom = check_oom(batch_size, bucket_boundary)
+                if not is_oom:
+                    for i in range(trials):
+                        is_oom = check_oom(batch_size, bucket_boundary)
+                        if not is_oom:
+                            break
+                batch_size -= 1
+
+            return batch_size
+
+        trials = 3
+        is_oom = False
+        while not is_oom and trials > 0:
+            is_oom = check_oom(1, sampler.bucket_boundaries[-1].item())
+            trials -= 1
+        if is_oom:
+            raise RuntimeError(
+                f"No valid batch size found at phase: {phase} for boundary {sampler.bucket_boundaries[-1].item()} "
+                "because of insufficient GPU memory."
+            )
+        else:
+            self.logger.info(
+                f"Found valid batch size at phase: {phase} for boundary {sampler.bucket_boundaries[-1].item()}"
+            )
+
         pre_bucket_boundary = None
         pre_batch_size = sampler.bucket_max_samples
         batch_sizes = []
         bucket_boundaries_batch_size_map = {}
         torch.cuda.set_per_process_memory_fraction(
-            opt_get(self.opt, ["search_batch_size_for_bucket_max_memory_fraction"], 0.75)
+            opt_get(self.opt, ["search_batch_size_for_bucket_max_memory_fraction"], 0.8)
         )
         for bucket_boundary in sampler.bucket_boundaries:
             if pre_bucket_boundary is not None:
                 assert bucket_boundary > pre_bucket_boundary, "bucket_boundary must be greater than pre_bucket_boundary"
             found = False
-            for batch_size in range(pre_batch_size, sampler.bucket_min_samples, -1):  # 二分查找比较好
-                for i in range(4):
-                    dummy_input = dataset.create_dummy_input(batch_size, bucket_boundary)
-                    self.model.feed_data(dummy_input, self.current_step, perform_micro_batching=False)
-                    if phase == "train":
-                        is_oom, _ = self.model.optimize_parameters(
-                            self.current_step, return_grad_norms=False, raise_oom=False
-                        )
-                    else:
-                        is_oom, _ = self.model.test(raise_oom=False)
+            for batch_size in range(pre_batch_size, sampler.bucket_min_samples, -2):
+                for i in range(3):
+                    is_oom = check_oom(batch_size, bucket_boundary)
                     if is_oom:
                         break
+                if not is_oom:
+                    batch_size += 1
+                    for i in range(3):
+                        is_oom = check_oom(batch_size, bucket_boundary)
+                        if is_oom:
+                            break
+                    if is_oom:
+                        batch_size -= 1
+                        is_oom = False
+
                 if not is_oom:
                     if batch_size == sampler.bucket_max_samples:
                         self.logger.warning(
                             f"Found best {batch_size=} for {bucket_boundary=} is equal to bucket_max_samples, "
                             "the bucket_max_samples is maybe too small."
                         )
+                    else:
+                        self.logger.info(f"Found best {batch_size=} for {bucket_boundary=}")
                     bucket_boundaries_batch_size_map[bucket_boundary.item()] = torch.LongTensor([batch_size])[0]
                     batch_sizes.append(batch_size)
                     found = True
@@ -571,6 +652,27 @@ class Trainer:
             else:
                 pre_batch_size = batch_sizes[-1]
                 pre_bucket_boundary = bucket_boundary
+
+        # for bucket_boundary in torch.flip(sampler.bucket_boundaries, dims=(0,)):
+        #     if pre_bucket_boundary is not None:
+        #         assert bucket_boundary < pre_bucket_boundary, "bucket_boundary must be less than pre_bucket_boundary"
+
+        #     batch_size_found = search_batch_size(pre_batch_size, bucket_boundary)
+        #     if batch_size_found > 0:
+        #         if batch_size_found > sampler.bucket_max_samples:
+        #             self.logger.warning(
+        #                 f"Found best {batch_size_found=} for {bucket_boundary=} is greater than bucket_max_samples, "
+        #                 "the bucket_max_samples is maybe too small."
+        #             )
+        #         bucket_boundaries_batch_size_map[bucket_boundary.item()] = torch.LongTensor([batch_size_found])[0]
+        #         pre_batch_size = batch_size_found
+        #         pre_bucket_boundary = bucket_boundary
+        #     else:
+        #         raise RuntimeError(
+        #             f"No valid batch size found at phase: {phase} for boundary {bucket_boundary} "
+        #             "because of insufficient GPU memory."
+        #         )
+
         self.logger.info(
             f"Searching done. The bucket_boundaries_batch_size_map for {phase=} is: {bucket_boundaries_batch_size_map}"
         )
@@ -657,4 +759,5 @@ if __name__ == "__main__":
         trainer.rank = torch.distributed.get_rank()
         # torch.cuda.set_device(rank)
     trainer.init(args.opt, opt)
+    trainer.online_stat()
     trainer.do_training()

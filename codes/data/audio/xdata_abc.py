@@ -10,6 +10,24 @@ Tensor = torch.Tensor
 
 class AudioABCDataset(torch.utils.data.Dataset[T_co], metaclass=ABCMeta):
 
+    def create_datasets(self, phase, dataset_len, phases_ratios=None, seed=1234):
+        if phase == "uni":
+            g = torch.Generator()
+            g.manual_seed(seed)
+            perm = torch.randperm(dataset_len, generator=g)
+            if phases_ratios is None:
+                phases_ratios = [0.985]
+            train_num = int(dataset_len * phases_ratios[0])
+            train_list = perm[:train_num]
+            val_list = perm[train_num:]
+            if len(val_list) > 0:
+                phases_indice_dict = dict(train=train_list, val=val_list)
+            else:
+                phases_indice_dict = {f"{phase}": list(range(dataset_len))}
+        else:
+            phases_indice_dict = {f"{phase}": list(range(dataset_len))}
+        return phases_indice_dict
+
     def __len__(self):
         return self.dataset_len
 

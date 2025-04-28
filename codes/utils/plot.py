@@ -161,7 +161,19 @@ def plot_core(
             ax.yaxis.set_label_position("left")
             ax.tick_params(labelsize="x-small", left=True, labelleft=True)
         if colorbar and w_id == (figures_w - 1):
-            fig.colorbar(mappable=im, shrink=0.65, orientation="vertical", ax=ax)
+            # 在右侧添加颜色条
+            cax = ax.inset_axes([1.02, 0.1, 0.2, 0.8])
+            # 隐藏 inset_axes 的边界和坐标轴
+            cax.spines["top"].set_visible(False)
+            cax.spines["right"].set_visible(False)
+            cax.spines["left"].set_visible(False)
+            cax.spines["bottom"].set_visible(False)
+
+            cax.set_xticks([])  # 隐藏 x 轴刻度
+            cax.set_yticks([])  # 隐藏 y 轴刻度
+
+            cbar = fig.colorbar(mappable=im, location="left", orientation="vertical", ax=cax)
+            cbar.ax.yaxis.set_ticks_position("right")
 
     elif visual_method == "plot":
         ax.plot(data, color=color)

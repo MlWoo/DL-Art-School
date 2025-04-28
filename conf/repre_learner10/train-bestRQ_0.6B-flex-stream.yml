@@ -1,5 +1,5 @@
 # the model aims to use 64Hz code rate.
-name: &name streamconformer-bestrq-large_lr_h100x8_gelu-causal-sub1-v2
+name: &name streamconformer-bestrq-large_lr_h100x8_gelu-causal-sub1-v3
 model: extensibletrainer
 scale: 1
 gpu_ids: [0,1,2,3]
@@ -18,7 +18,7 @@ csv: false
 ddp_find_unused_parameters: true
 dist_backend: ddp
 
-manual_seed: &manual_seed 42
+manual_seed: &manual_seed 37102
 mel_bins: &mel_bins 128
 
 audio_process: &audio_process
@@ -35,7 +35,7 @@ audio_process: &audio_process
     mel_norm_file: /home/wumenglin/repo-dev/dl-art-school/codes/torch_mels.pt
 
 search_batch_size_for_bucket: true
-search_batch_size_for_bucket_max_memory_fraction: 0.88
+search_batch_size_for_bucket_max_memory_fraction: 0.9
 dataloaders:
   train:
     # data loader background
@@ -43,7 +43,7 @@ dataloaders:
     buffer_background_size: 2
     process_background: true
     process_device: -1
-    n_workers: 12
+    n_workers: 16
     pin_memory: true
 
     dataset:
@@ -87,7 +87,7 @@ dataloaders:
       ## bucketed data sampler
       bucket_max_batch_tokens: 16384
       bucket_min_samples: 1
-      bucket_max_samples: 96
+      bucket_max_samples: 180
 
     collator:
       mode: MelsInferCollator
@@ -109,7 +109,7 @@ dataloaders:
     buffer_background_size: 2
     process_background: true
     process_device: -1
-    n_workers: 12
+    n_workers: 24
     pin_memory: true
 
     dataset:
@@ -211,8 +211,8 @@ networks:
         sub_layers: 1
         conv_hidden_size: [8,]
         compile: false
-        window_size: 64
-        stream_chunk_size: 8 #160ms
+        window_size: 256
+        stream_chunk_size: 12 #160ms
 
 exp_dir: &exp_dir
   !join [../experiments/, *name]
@@ -292,7 +292,7 @@ logger:
   print_freq: 10
   save_checkpoint_freq: 10000
   visuals: [gen, tgt]
-  visual_debug_rate: 1000
+  visual_debug_rate: 10000
   visuals_batch_size: 16
   is_mel_spectrogram: true
   disable_state_saving: false

@@ -8,7 +8,7 @@ from einops import rearrange
 from model.audio.module.usm_encoder import USMSpeechEncoder
 from model.base import BaseModule
 from model.module.base.mask import sequence_mask
-from model.util.ops import safe_stack
+from model.util.ops import safe_stack  # noqa F401
 from model.vqvae.quantizers import RandomProjectionQuantizer
 from torch import Tensor, nn
 from torch.nn import functional as F
@@ -149,7 +149,7 @@ class BestRqFramework(BaseModule):
                 l_labels=["layers"],
                 visual_methods=["show"],
                 color_info=[None],
-                align_direction="h",
+                align_direction="v",
                 width=4,
                 height=4,
             ),
@@ -265,7 +265,11 @@ class BestRqFramework(BaseModule):
 
             del masked_target_values
 
-        encoder_out = self.encoder(masked_input_values, input_lengths=recover_input_lengths, num_attn=1)
+        encoder_out = self.encoder(
+            masked_input_values,
+            input_lengths=recover_input_lengths,
+            num_attn=1 if self.run_info.get("will_visual", False) else 0,
+        )
         last_hidden_state = encoder_out.last_hidden_state
         targets = last_hidden_state[time_mask_indices].contiguous()
 
@@ -324,6 +328,7 @@ class BestRqFramework(BaseModule):
             targets_out = self.out_linear(targets)
             logits = torch.softmax(targets_out, 1)
             logits_ids = torch.argmax(logits, 1)
+
         return labels, logits_ids
 
 

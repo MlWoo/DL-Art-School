@@ -266,7 +266,7 @@ train:
   niter: 50000000
   warmup_iter: 25000
   mega_batch_factor: 1    # <-- Gradient accumulation factor. If you are running OOM, increase this to [2,4,8].
-  val_freq: 100000
+  val_freq: 10
 
   default_lr_scheme: TransformerLR
   num_model_dim: *num_model_dim

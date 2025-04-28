@@ -20,19 +20,19 @@ if [ $# -ne 0 ]; then
 fi
 
 CUR_DIR=`pwd`
-PYTHON_TEMP=/home/wumenglin/repo/CosyVoice-dev:/home/wumenglin/repo/CosyVoice-dev/third_party/Matcha-TTS
+PYTHON_TEMP=/home/wumenglin/repo-dev/CosyVoice-dev:/home/wumenglin/repo-dev/CosyVoice-dev/third_party/Matcha-TTS
 export PYTHONPATH="${PYTHON_TEMP}:${PYTHONPATH}:${CUR_DIR}"
 export TF_ENABLE_ONEDNN_OPTS=0
 # export NCCL_DEBUG=INFO
 # export NCCL_IB_DISABLE=1
 # export NCCL_SOCKET_IFNAME=eth0
-# export MOSHI_DIR=/home/wumenglin/repo/moshi-dev/moshi
+export MOSHI_DIR=/home/wumenglin/repo/moshi-dev/moshi
 
 if [ ${NGPU} -gt 1 ]; then
-    PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
+    #PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
     torchrun --nproc_per_node=${NGPU} \
     train.py -opt ${CONFIG_FILE} --launcher torchrun --gpus ${NGPU} $overrides
 else
-    PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
+    #PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
     python train.py -opt ${CONFIG_FILE} --launcher none --gpus ${NGPU} $overrides
 fi

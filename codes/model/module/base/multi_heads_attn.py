@@ -187,7 +187,7 @@ class MultiHeadAttn(nn.Module):
         spectral_norm: bool = False,
         window_size: int = 5,
         *args,
-        **kawrgs
+        **kawrgs,
     ):
         """
         attn_func_type
@@ -450,11 +450,14 @@ class MultiHeadAttn(nn.Module):
     def post_attn_context(self, context, attn, num_attn: int = 0):
         context = self.proj(context)
         if num_attn == -1 or num_attn >= attn.shape[0]:
-            return self.cxt_dropout(context), attn.detach()
+            logger.info(
+                f"It's very slow to use num_attn: {num_attn} to record all attention weights when formal training."
+            )
+            return self.cxt_dropout(context), attn.detach().cpu()
         elif num_attn == 0 or num_attn < -1:
             return self.cxt_dropout(context), None
         else:
-            return self.cxt_dropout(context), attn.detach()[:num_attn]
+            return self.cxt_dropout(context), attn.detach()[:num_attn].cpu()
 
     def _apply_rotary_embedding(self, hidden_states, relative_position_embeddings):
         batch_size, sequence_length, hidden_size = hidden_states.size()
@@ -540,7 +543,7 @@ class NativeRelativePositionMultiHeadAttn(MultiHeadAttn):
         spectral_norm: bool = False,
         window_size: int = 5,
         *args,
-        **kawrgs
+        **kawrgs,
     ):
         """Construct an RelPositionMultiHeadedAttention object."""
         super().__init__(

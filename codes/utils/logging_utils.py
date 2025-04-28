@@ -34,7 +34,6 @@ def get_logger(name, log_file=None, log_level=logging.INFO):
     for logger_name in logger_initialized:
         if name.startswith(logger_name):
             return logger_initialized[logger_name]
-
     logger = logging.getLogger(name)
     stream_handler = logging.StreamHandler()
     handlers = [stream_handler]

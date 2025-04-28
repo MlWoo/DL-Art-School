@@ -2,39 +2,26 @@ import bisect
 import copy
 from typing import List
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 from utils.logging_utils import get_root_logger
 
 
+def is_numpy_array(data):
+    return isinstance(data, np.ndarray)
+
+
 def sanity_check_merge_dict_item(dict1, dict2):
     for k2, v2 in dict2.items():
         if k2 in dict1:
-            assert isinstance(dict1[k2], list) and isinstance(v2, list)
-            dict1[k2] = dict1[k2] + v2
-        else:
-            raise ValueError(f"The item {k2} does not occur in different datasets")
-
-
-class DynamicDataset(Dataset):
-    def __init__(self, size, min_length=100, max_length=1023):
-
-        self.size = size
-        self.dummy_lengths = torch.randint(min_length, max_length, (size,))
-        self.info_dict = {"dummy_length": self.dummy_lengths}
-        self.indices = torch.arange(size)
-
-    def __len__(self):
-        return self.size
-
-    def __getitem__(self, index):
-        return torch.randint(0, 4096, (self.dummy_lengths[index],))
-
-    def create_dummy_input(self, batch_size, bucket_boundary, device):
-        dummy_input = torch.randint(0, 10000, (batch_size, bucket_boundary))
-        dummy_length = torch.randint(bucket_boundary // 2, bucket_boundary, (batch_size,))
-        dummy_input = dummy_input.to(device)
-        return dummy_input, dummy_length
+            v1 = dict1[k2]
+            if isinstance(v1, list) and isinstance(v2, list):
+                dict1[k2] = v1 + v2
+            elif isinstance(v1, np.ndarray) and isinstance(v2, np.ndarray):
+                dict1[k2] = np.concatenate(v1, v2)
+            else:
+                raise ValueError(f"The item {k2} does not occur in different datasets")
 
 
 class ConcatDataset(Dataset):
@@ -153,3 +140,24 @@ class ConcatDataset(Dataset):
             data_dict = self.__collect__(dataset_indices, sample_indices_indices)
 
             return data_dict
+
+
+class DynamicDataset(Dataset):
+    def __init__(self, size, min_length=100, max_length=1023):
+
+        self.size = size
+        self.dummy_lengths = torch.randint(min_length, max_length, (size,))
+        self.info_dict = {"dummy_length": self.dummy_lengths}
+        self.indices = torch.arange(size)
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, index):
+        return torch.randint(0, 4096, (self.dummy_lengths[index],))
+
+    def create_dummy_input(self, batch_size, bucket_boundary, device):
+        dummy_input = torch.randint(0, 10000, (batch_size, bucket_boundary))
+        dummy_length = torch.randint(bucket_boundary // 2, bucket_boundary, (batch_size,))
+        dummy_input = dummy_input.to(device)
+        return dummy_input, dummy_length

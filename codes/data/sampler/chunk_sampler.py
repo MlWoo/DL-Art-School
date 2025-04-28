@@ -153,6 +153,7 @@ class LengthChunkSampler:
         bucket_max_samples: int = 64,
         descending: bool = False,
         partition_record_path: Optional[str] = None,
+        bucketed_batch_size_map: Optional[Dict[int, int]] = None,
     ):
         """The sampler generate dataset indices in term of sequencial data which has length info.
 
@@ -257,12 +258,12 @@ class LengthChunkSampler:
         self.acc_coeffs = acc_coeffs
         self.num_buckets = num_buckets
         self.partition_record_path = partition_record_path
-        torch.manual_seed(seed)
         self.protected = False
         self.bucket_min_samples = bucket_min_samples
         self.bucket_max_samples = bucket_max_samples
         self.bucket_max_batch_tokens = bucket_max_batch_tokens
-        self.bucket_boundaries_batch_size_map = {}
+        self.bucket_boundaries_batch_size_map = bucketed_batch_size_map
+        torch.manual_seed(seed)
 
     def finalize_dataset(self, dataset, indices: Union[torch.LongTensor, Tuple[int]], verbose: bool = True):
         self.dataset = dataset
@@ -277,13 +278,19 @@ class LengthChunkSampler:
             sizes = torch.LongTensor(self.dataset.info_dict[sorted_type])[indices].numpy()
             self.bucket_boundaries = torch.from_numpy(get_buckets(sizes, self.num_buckets))
         if self.bucket_boundaries is not None and self.batch_mode == "bucketed":
-            for bucket_boundary in self.bucket_boundaries:
-                batch_size = self.bucket_max_batch_tokens // bucket_boundary
-                if batch_size > self.bucket_max_samples:
-                    batch_size = self.bucket_max_samples
-                elif batch_size < self.bucket_min_samples:
-                    batch_size = self.bucket_min_samples
-                self.bucket_boundaries_batch_size_map[bucket_boundary.item()] = batch_size
+            if self.bucket_boundaries_batch_size_map is None:
+                self.bucket_boundaries_batch_size_map = {}
+                for bucket_boundary in self.bucket_boundaries.tolist():
+                    batch_size = self.bucket_max_batch_tokens // bucket_boundary
+                    if batch_size > self.bucket_max_samples:
+                        batch_size = self.bucket_max_samples
+                    elif batch_size < self.bucket_min_samples:
+                        batch_size = self.bucket_min_samples
+                    self.bucket_boundaries_batch_size_map[bucket_boundary] = batch_size
+            else:
+                for bucket_boundary in self.bucket_boundaries.tolist():
+                    if bucket_boundary not in self.bucket_boundaries_batch_size_map:
+                        raise ValueError(f"bucket_boundary {bucket_boundary} not in bucket_boundaries_batch_size_map")
 
         if self.bucket_boundaries is not None and self.rank <= 0:
             self.logger.info(f"sampler bucket boundaries: {self.bucket_boundaries.tolist()}")
@@ -376,6 +383,11 @@ class LengthChunkSampler:
                 ddp_bucket_batches_indices_list = torch.load(
                     osp.join(self.partition_record_path, self.phase + "_bucket_partition.pt")
                 )
+                if self.shuffle:
+                    perm = torch.randperm(len(ddp_bucket_batches_indices_list), generator=g)
+                    shuffled_ddp_bucket_batches_indices_list = [ddp_bucket_batches_indices_list[i] for i in perm]
+                    ddp_bucket_batches_indices_list = shuffled_ddp_bucket_batches_indices_list
+
                 return ddp_bucket_batches_indices_list
 
         if self.bucket_boundaries is not None:
@@ -417,7 +429,7 @@ class LengthChunkSampler:
                         total_batch_num = len(bucket_indices)
                         extra_batch_num = total_batch_num - total_batch_num % self.num_replicas
                         extra_indices = torch.randperm(total_batch_num)[:extra_batch_num]  # 随机排列后取前n个
-                        bucket_indices = bucket_indices + [bucket_indices[i] for i in extra_indices]
+                        bucket_indices = torch.cat([bucket_indices, bucket_indices[extra_indices]], dim=0)
 
                         ddp_bucket_batches_indices = split_list(bucket_indices, ddp_batch_size, keep_tail=False)
 

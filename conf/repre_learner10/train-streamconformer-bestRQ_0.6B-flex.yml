@@ -1,5 +1,5 @@
 # the model aims to use 64Hz code rate.
-name: &name streamconformer-bestrq-large_lr_h100x8_test
+name: &name streamconformer-bestrq-large_lr_h100x8_chunkwise-test-v1
 model: extensibletrainer
 scale: 1
 gpu_ids: [0,1,2,3]
@@ -17,6 +17,7 @@ use_tb_logger: true
 csv: false
 ddp_find_unused_parameters: true
 dist_backend: ddp
+apply_compile: true
 
 manual_seed: &manual_seed 42
 mel_bins: &mel_bins 128
@@ -180,6 +181,7 @@ networks:
       codebook_dim: 16
       mask_time: 300
       mask_prob: 0.03
+      #chunkwise_size: 32
       encoder:
         class_name: model.audio.module.bestrq_flex.BestRqConformerEncoder
         input_dim: *mel_bins
@@ -187,7 +189,7 @@ networks:
         num_attention_heads: 8
         hidden_size: *num_model_dim
         ffn_dim: 4096
-        num_hidden_layers: 24
+        num_hidden_layers: 2
         conv_depthwise_kernel_size: 4
         feat_proj_dropout: 0.
         activation_dropout: 0.
@@ -208,9 +210,10 @@ networks:
         preconformer_input_feature_projection: false
         causal: true
         conv_hidden_size: [8, 32]
+        window_size: 128
+        stream_chunk_size: null #160ms
         compile: false
-        window_size: 64
-        stream_chunk_size: 4 #160ms
+
 
 exp_dir: &exp_dir
   !join [../experiments/, *name]
@@ -269,7 +272,7 @@ train:
   niter: 50000000
   warmup_iter: 25000
   mega_batch_factor: 1    # <-- Gradient accumulation factor. If you are running OOM, increase this to [2,4,8].
-  val_freq: 100000
+  val_freq: 10
 
   default_lr_scheme: TransformerLR
   num_model_dim: *num_model_dim
@@ -290,7 +293,7 @@ logger:
   print_freq: 10
   save_checkpoint_freq: 10000
   visuals: [gen, tgt]
-  visual_debug_rate: 1000
+  visual_debug_rate: 5000
   visuals_batch_size: 16
   is_mel_spectrogram: true
   disable_state_saving: false

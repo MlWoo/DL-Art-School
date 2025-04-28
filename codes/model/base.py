@@ -20,6 +20,15 @@ class BaseModule(nn.Module, ABC):
         self.num_attn_visual_debug = num_attn_visual_debug
         self.num_visual_debug = num_visual_debug
         self.debug_val_keys = debug_val_keys
+        self.run_info = {}
+
+    def feed_run_info(self, epoch, step, will_log, will_visual, **kwargs):
+        self.run_info["epoch"] = epoch
+        self.run_info["iter"] = step
+        self.run_info["will_log"] = will_log
+        self.run_info["will_visual"] = will_visual
+        for k, v in kwargs.items():
+            self.run_info[k] = v
 
     def get_debug_values(self, step, __):
         if self.debug_info is None:
@@ -47,6 +56,13 @@ class BaseModule(nn.Module, ABC):
         if plot_cfg is not None:
             annotation = None  # self.get_annotation(self.inputs_dict, indice)
             for cfg_k, cfg_v in plot_cfg.items():
+                valid = True
+                for k in cfg_v["tensor_keys"]:
+                    if k not in self.debug_info or self.debug_info[k] is None:
+                        valid = False
+                        break
+                if not valid:
+                    continue
                 images = plot_images(
                     self.debug_info,
                     tensor_keys=cfg_v["tensor_keys"],

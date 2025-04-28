@@ -8,7 +8,7 @@ import torch
 import torch.utils.data
 from utils.options import opt_get
 
-from data.builder import DATASETS, build_collation, build_dataset
+from data.builder import build_collation, build_datasets
 from data.dataloader import GeneralSeqDataloader
 
 
@@ -29,25 +29,21 @@ def create_dataset_collator(dataloader_opt, return_collate=False):
     collate = None
     dataset_opt = dataloader_opt["dataset"]
     collator_opt = dataloader_opt["collator"]
-    dataset_mode = dataset_opt["mode"]
-
     # datasets for audio
     registered_module("data/audio")
-    if DATASETS.is_registered(dataset_mode):
-        cfg = dict(opt=dataset_opt)
-        cfg["type"] = dataset_mode
-        dataset = build_dataset(cfg)
-        collate_mode = opt_get(collator_opt, ["mode"], None)
-        if collate_mode is None:
-            collate = None
-        else:
-            cfg = dict(opt=collator_opt)
-            cfg["type"] = collate_mode
-            collate = build_collation(cfg)
-        if return_collate:
-            return dataset, collate
-        else:
-            return dataset
+    dataset = build_datasets(dataset_opt)
+    collate_mode = opt_get(collator_opt, ["mode"], None)
+    if collate_mode is None:
+        collate = None
+    else:
+        cfg = dict(opt=collator_opt)
+        cfg["type"] = collate_mode
+        collate = build_collation(cfg)
+
+    if return_collate:
+        return dataset, collate
+    else:
+        return dataset
 
 
 def create_dataloader(dataset, dataloader_opt, opt=None, sampler=None, collate_fn=None, shuffle=True):

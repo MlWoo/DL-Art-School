@@ -653,7 +653,8 @@ class TransformerBlocks(AbcTransformerBlocks):
         kv_mask: Optional[Tensor] = None,
         outter_score_mask: Optional[Tensor] = None,
         sample: bool = False,
-        all_hidden_states: bool = False,
+        out_hidden_states: bool = False,
+        out_score_mask: bool = False,
         num_attn: int = 0,
         pos_info: Optional[Tensor] = None,
         layer_idx: int = -1,
@@ -676,21 +677,22 @@ class TransformerBlocks(AbcTransformerBlocks):
                 x_mask=x_mask,
                 kv_mask=kv_mask,
                 score_mask=score_mask,
+                outter_score_mask=outter_score_mask,
                 sample=sample,
                 num_attn=num_attn,
                 pos_info=pos_info,
             )
-            score_mask_tuple.append(score_mask_out)
+            if out_score_mask:
+                score_mask_tuple.append(score_mask_out if score_mask_out is not None else None)
+            else:
+                score_mask_tuple.append(None)
             attn_tuple.append(attn)
-            if all_hidden_states:
+            if out_hidden_states:
                 hidden_state_tuple.append(x)
             else:
                 hidden_state_tuple.append(None)
             if i == layer_idx:
-                if all_hidden_states:
-                    hidden_state_tuple[-1] = x
-                else:
-                    hidden_state_tuple = x
+                hidden_state_tuple[-1] = x
                 return hidden_state_tuple, attn_tuple, score_mask_tuple
 
         if self.final_ln is not None:
@@ -771,7 +773,8 @@ class AdaptLNTransformerBlocks(AbcTransformerBlocks):
         kv_mask: Optional[Tensor] = None,
         outter_score_mask: Optional[Tensor] = None,
         sample: bool = False,
-        all_hidden_states: bool = False,
+        out_hidden_states: bool = False,
+        out_score_mask: bool = False,
         num_attn: int = -1,
         pos_info: Optional[Tensor] = None,
         ln_mean_scale: Optional[Tensor] = None,
@@ -809,7 +812,7 @@ class AdaptLNTransformerBlocks(AbcTransformerBlocks):
                     weight_2=mean_scale_vectors[6 * i + 4],
                     bias_2=mean_scale_vectors[6 * i + 5],
                 )
-            x, attn, score_mask = block(
+            x, attn, score_mask_out = block(
                 x,
                 enc_kv=enc_kv,
                 x_mask=x_mask,
@@ -821,8 +824,12 @@ class AdaptLNTransformerBlocks(AbcTransformerBlocks):
                 **control_ln_dict,
             )
             attn_tuple.append(attn)
-            score_mask_tuple.append(score_mask)
-            if all_hidden_states:
+            if out_score_mask:
+                score_mask_tuple.append(score_mask_out.cpu() if score_mask_out is not None else None)
+            else:
+                score_mask_tuple.append(None)
+
+            if out_hidden_states:
                 hidden_state_tuple.append(x)
             else:
                 hidden_state_tuple.append(None)
@@ -905,8 +912,9 @@ class ResAdaptTransformerBlocks(AbcTransformerBlocks):
         kv_mask: Optional[Tensor] = None,
         outter_score_mask: Optional[Tensor] = None,
         sample: bool = False,
-        all_hidden_states: bool = False,
-        num_attn: int = -1,
+        out_hidden_states: bool = False,
+        out_score_mask: bool = False,
+        num_attn: int = 0,
         pos_info: Optional[Tensor] = None,
         residual_adapter=None,
     ):
@@ -935,8 +943,11 @@ class ResAdaptTransformerBlocks(AbcTransformerBlocks):
             if residual_adapter is not None:
                 x = x + residual_adapter(x, i)
             attn_tuple.append(attn)
-            score_mask_tuple.append(score_mask_out)
-            if all_hidden_states:
+            if out_score_mask:
+                score_mask_tuple.append(score_mask_out.cpu() if score_mask_out is not None else None)
+            else:
+                score_mask_tuple.append(None)
+            if out_hidden_states:
                 hidden_state_tuple.append(x)
             else:
                 hidden_state_tuple.append(None)
@@ -951,8 +962,6 @@ class ResAdaptTransformerBlocks(AbcTransformerBlocks):
 
 
 class Transformer(nn.Module):
-    """Base class for FS2Encoder."""
-
     def __init__(
         self,
         attn_type: str = "base",
@@ -1065,7 +1074,8 @@ class Transformer(nn.Module):
         kv_mask: Optional[Tensor] = None,
         outter_score_mask: Optional[Tensor] = None,
         sample: bool = False,
-        all_hidden_states: bool = False,
+        out_hidden_states: bool = False,
+        out_score_mask: bool = False,
         num_attn: int = -1,
         layer_idx: int = -1,
     ):
@@ -1077,14 +1087,15 @@ class Transformer(nn.Module):
                 fertilities is None or indices is None
             ), "The encoding is confused if both fertilities and indices are provided."
             x, pos_encoding = self.pos_enc(x, fertilities, indices)
-            hidden_state_tuple, attn_tuple, score_mask_tuple = self.transformer(
+            hidden_state_tuple, attn_tuple, score_mask_tuple = self.layers(
                 x,
                 x_mask=x_mask,
                 enc_kv=enc_kv,
                 kv_mask=kv_mask,
                 outter_score_mask=outter_score_mask,
                 sample=sample,
-                all_hidden_states=all_hidden_states,
+                out_hidden_states=out_hidden_states,
+                out_score_mask=out_score_mask,
                 num_attn=num_attn,
                 layer_idx=layer_idx,
             )
@@ -1102,7 +1113,8 @@ class Transformer(nn.Module):
                 kv_mask=kv_mask,
                 outter_score_mask=outter_score_mask,
                 sample=sample,
-                all_hidden_states=all_hidden_states,
+                out_hidden_states=out_hidden_states,
+                out_score_mask=out_score_mask,
                 num_attn=num_attn,
                 layer_idx=layer_idx,
             )
@@ -1110,9 +1122,7 @@ class Transformer(nn.Module):
         return hidden_state_tuple, attn_tuple, score_mask_tuple
 
 
-class TransformerCompile(TransformerBlocks):
-    """Base class for FS2Encoder."""
-
+class TransformerCompile(nn.Module):
     def __init__(
         self,
         attn_type: str = "base",
@@ -1146,37 +1156,7 @@ class TransformerCompile(TransformerBlocks):
         window_size: Optional[int] = None,
         max_len: int = 1000,
     ):
-        super().__init__(
-            in_attn_size=num_attn_in_dim,
-            head_attn_size=num_attn_head_dim,
-            out_attn_size=num_attn_out_dim,
-            hidden_ffn_size=ffn_dim,
-            num_hidden_layers=num_hidden_layers,
-            num_heads=num_attention_heads,
-            out_ffn_size=num_attn_out_dim,
-            attn_type=attn_type,
-            attn_func_type=attn_func_type,
-            ffn_kernel_size=ffn_kernel_size,
-            ffn_act_func=ffn_act_func,
-            attn_dropout_p=attn_dropout_p,
-            cxt_dropout_p=cxt_dropout_p,
-            ffn_dropout_p=ffn_dropout_p,
-            pre_LN=pre_LN,
-            use_macaron=use_macaron,
-            conv_module_type=conv_module_type,
-            conv_module_kernel_size=conv_module_kernel_size,
-            conformer_conv_dropout_p=conformer_conv_dropout_p,
-            pre_conv_module=pre_conv_module,
-            ffn_cat_after=ffn_cat_after,
-            causal=causal,
-            padding_mode=padding_mode,
-            chunkwise_size=chunkwise_size,
-            stream_chunk_size=stream_chunk_size,
-            norm_groups=norm_groups,
-            final_LN=final_LN,
-            window_size=window_size,
-            max_len=max_len,
-        )
+        super().__init__()
         if attn_type == "base":
             x_scale = None
             scaled = False
@@ -1212,7 +1192,40 @@ class TransformerCompile(TransformerBlocks):
             raise ValueError(f"Transformer: {attn_type} is not supported for the moment")
         self.attn_type = attn_type
 
-    def forward(
+        self.blocks = TransformerBlocks(
+            in_attn_size=num_attn_in_dim,
+            head_attn_size=num_attn_head_dim,
+            out_attn_size=num_attn_out_dim,
+            hidden_ffn_size=ffn_dim,
+            num_hidden_layers=num_hidden_layers,
+            num_heads=num_attention_heads,
+            out_ffn_size=num_attn_out_dim,
+            attn_type=attn_type,
+            attn_func_type=attn_func_type,
+            ffn_kernel_size=ffn_kernel_size,
+            ffn_act_func=ffn_act_func,
+            attn_dropout_p=attn_dropout_p,
+            cxt_dropout_p=cxt_dropout_p,
+            ffn_dropout_p=ffn_dropout_p,
+            pre_LN=pre_LN,
+            use_macaron=use_macaron,
+            conv_module_type=conv_module_type,
+            conv_module_kernel_size=conv_module_kernel_size,
+            conformer_conv_dropout_p=conformer_conv_dropout_p,
+            pre_conv_module=pre_conv_module,
+            ffn_cat_after=ffn_cat_after,
+            causal=causal,
+            padding_mode=padding_mode,
+            chunkwise_size=chunkwise_size,
+            stream_chunk_size=stream_chunk_size,
+            norm_groups=norm_groups,
+            final_LN=final_LN,
+            window_size=window_size,
+            max_len=max_len,
+        )
+        self.layers = self.blocks.layers
+
+    def blocks_forward(
         self,
         x: Tensor,
         x_mask: Optional[Tensor] = None,
@@ -1223,7 +1236,62 @@ class TransformerCompile(TransformerBlocks):
         kv_mask: Optional[Tensor] = None,
         outter_score_mask: Optional[Tensor] = None,
         sample: bool = False,
-        all_hidden_states: bool = False,
+        out_hidden_states: bool = False,
+        out_score_mask: bool = False,
+        num_attn: int = -1,
+        layer_idx: int = -1,
+        pos_info: Optional[Tensor] = None,
+    ):
+        score_mask = self.blocks.get_score_mask(x, enc_kv, x_mask, kv_mask, outter_score_mask, sample)
+
+        attn_tuple = []
+        hidden_state_tuple = []
+        score_mask_tuple = []
+        for i, block in enumerate(self.layers):
+            x, attn, score_mask_out = block(
+                x,
+                enc_kv=enc_kv,
+                x_mask=x_mask,
+                kv_mask=kv_mask,
+                score_mask=score_mask,
+                sample=sample,
+                num_attn=num_attn,
+                pos_info=pos_info,
+            )
+            score_mask_tuple.append(score_mask_out)
+            attn_tuple.append(attn)
+            if out_hidden_states:
+                hidden_state_tuple.append(x)
+            else:
+                hidden_state_tuple.append(None)
+            if i == layer_idx:
+                if out_hidden_states:
+                    hidden_state_tuple[-1] = x
+                else:
+                    hidden_state_tuple = x
+                return hidden_state_tuple, attn_tuple, score_mask_tuple
+
+        if self.blocks.final_ln is not None:
+            x = self.blocks.final_ln(x)
+        if x_mask is not None:
+            x = x * x_mask
+        hidden_state_tuple.append(x)
+
+        return hidden_state_tuple, attn_tuple, score_mask_tuple
+
+    def forward(
+        self,
+        x: Tensor,
+        x_mask: Optional[Tensor] = None,
+        extra: Optional[Tensor] = None,
+        fertilities: Optional[Tensor] = None,
+        indices: Optional[Tensor] = None,
+        enc_kv: Optional[Tensor] = None,
+        kv_mask: Optional[Tensor] = None,
+        outter_score_mask: Optional[Tensor] = None,
+        out_score_mask: bool = False,
+        sample: bool = False,
+        out_hidden_states: bool = False,
         num_attn: int = -1,
         layer_idx: int = -1,
     ):
@@ -1235,14 +1303,15 @@ class TransformerCompile(TransformerBlocks):
                 fertilities is None or indices is None
             ), "The encoding is confused if both fertilities and indices are provided."
             x, pos_encoding = self.pos_enc(x, fertilities, indices)
-            hidden_state_tuple, attn_tuple, score_mask_tuple = super().forward(
+            hidden_state_tuple, attn_tuple, score_mask_tuple = self.blocks_forward(
                 x,
                 x_mask=x_mask,
                 enc_kv=enc_kv,
                 kv_mask=kv_mask,
                 outter_score_mask=outter_score_mask,
+                out_score_mask=out_score_mask,
                 sample=sample,
-                all_hidden_states=all_hidden_states,
+                out_hidden_states=out_hidden_states,
                 num_attn=num_attn,
                 layer_idx=layer_idx,
             )
@@ -1252,7 +1321,7 @@ class TransformerCompile(TransformerBlocks):
             else:
                 x = x * self.x_scale
                 pos_encoding = None
-            hidden_state_tuple, attn_tuple, score_mask_tuple = super().forward(
+            hidden_state_tuple, attn_tuple, score_mask_tuple = self.blocks_forward(
                 x,
                 pos_info=pos_encoding,
                 x_mask=x_mask,
@@ -1260,7 +1329,8 @@ class TransformerCompile(TransformerBlocks):
                 kv_mask=kv_mask,
                 outter_score_mask=outter_score_mask,
                 sample=sample,
-                all_hidden_states=all_hidden_states,
+                out_hidden_states=out_hidden_states,
+                out_score_mask=out_score_mask,
                 num_attn=num_attn,
                 layer_idx=layer_idx,
             )

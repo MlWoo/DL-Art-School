@@ -262,6 +262,7 @@ class BestRqConformerEncoder(nn.Module):
         compile: bool = False,
     ) -> None:
         super().__init__()
+        model_cls = TransformerCompile if compile else Transformer
         # compatible
         if position_embeddings_type == "relative":
             attn_type = "rpr"
@@ -328,7 +329,7 @@ class BestRqConformerEncoder(nn.Module):
             self.reduction_factors = 2
 
         if num_preconformer_layers > 0:
-            self.pre_conformer = Transformer(
+            self.pre_conformer = model_cls(
                 attn_type=pre_conformer_attn_type,
                 num_hidden_layers=num_preconformer_layers,
                 num_attention_heads=num_preconformer_heads,
@@ -367,7 +368,7 @@ class BestRqConformerEncoder(nn.Module):
             chunkwise_size = chunkwise_size // self.reduction_factors
         self.chunkwise_size = chunkwise_size
 
-        self.conformer = Transformer(
+        self.conformer = model_cls(
             attn_type=attn_type,
             num_hidden_layers=num_hidden_layers,
             num_attention_heads=num_attention_heads,
@@ -414,7 +415,7 @@ class BestRqConformerEncoder(nn.Module):
                 apply_compile_transformer(self.pre_conformer)
             self.compiled = True
 
-    def forward(self, input_values, input_lengths=None, layer_idx: int = -1, num_attn: int = -1):
+    def forward(self, input_values, input_lengths=None, layer_idx: int = -1, num_attn: int = 0):
         if not self.channel_last:
             input_values = input_values.permute(0, 2, 1)
 
@@ -427,7 +428,7 @@ class BestRqConformerEncoder(nn.Module):
         if self.proj_linear is not None:
             input_values = self.proj_linear(input_values)
         if self.pre_conformer is not None:
-            input_values, _, _ = self.pre_conformer(input_values, x_mask=mask)
+            input_values, _, _ = self.pre_conformer(input_values, x_mask=mask, num_attn=num_attn)
             input_values = input_values[-1]
 
         input_features = self.conv_subsample(input_values)

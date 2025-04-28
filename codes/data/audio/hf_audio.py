@@ -15,7 +15,6 @@ from data.audio.io import load_audio
 from data.audio.xdata_abc import AudioABCDataset
 from data.builder import DATASETS
 
-logger = get_root_logger()
 datasets.config.DEFAULT_MAX_BATCH_SIZE = 1000000000
 
 
@@ -65,7 +64,8 @@ class HuggingfaceAudioDataset(AudioABCDataset):
             dataset = dataset_dict[phase]
 
         end_time = time.time()
-        logger.info(f"load {phase} dataset time: {end_time - start_time}")
+        self.logger = get_root_logger()
+        self.logger.info(f"load {phase} dataset time: {end_time - start_time}")
 
         dataset.set_format("np")
         # filtered min duration
@@ -96,35 +96,18 @@ class HuggingfaceAudioDataset(AudioABCDataset):
         )
 
         self.info_dict = dict(
-            frame_length=frame_lengths.tolist(),
-            sample_frame_length=np.clip(frame_lengths, 0, sample_frame_length).tolist(),
+            frame_length=frame_lengths,
+            sample_frame_length=np.clip(frame_lengths, 0, sample_frame_length),
         )
 
         self.dataset = dataset
         self.dataset_len = len(self.files)
-
-        if self.phase == "uni":
-            g = torch.Generator()
-            self.seed = opt_get(opt, ["seed"], 1234)
-            g.manual_seed(self.seed)
-            perm = torch.randperm(self.dataset_len, generator=g)
-
-            phases_ratios = opt_get(
-                opt,
-                ["phases_ratios"],
-                [
-                    0.985,
-                ],
-            )
-            train_num = int(self.dataset_len * phases_ratios[0])
-            train_list = perm[:train_num]
-            val_list = perm[train_num:]
-            if len(val_list) > 0:
-                self.phases_indice_dict = dict(train=train_list, val=val_list)
-            else:
-                self.phases_indice_dict = {f"{self.phase}": list(range(self.dataset_len))}
-        else:
-            self.phases_indice_dict = {f"{self.phase}": list(range(self.dataset_len))}
+        self.phases_indice_dict = self.create_datasets(
+            phase,
+            self.dataset_len,
+            phases_ratios=opt_get(opt, ["phases_ratios"], [0.985]),
+            seed=opt_get(opt, ["seed"], 1234),
+        )
 
         self.read_keys = read_keys
         self.sorted = False

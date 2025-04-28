@@ -1,3 +1,5 @@
+import os
+
 import torch
 import torchaudio
 from librosa.filters import mel as librosa_mel_fn
@@ -162,11 +164,14 @@ class CanonicalTorchMelSpectrogram(Injector):
         self.mel_norm_file = opt_get(opt, ["mel_norm_file"], None)
         self.center = opt_get(opt, ["center"], False)
         self.rescaling_max = opt_get(opt, ["rescaling_max"], 0.999)
-        if self.mel_norm_file is not None:
-            self.mel_norms = torch.load(self.mel_norm_file, weights_only=True)
-        else:
-            self.mel_norms = None
+        self.mel_norms = None
+        self.load_mel_norms(self.mel_norm_file)
         self.pad_audio = int((self.filter_length - self.hop_length) / 2)
+
+    def load_mel_norms(self, mel_norm_file):
+        if self.mel_norms is None and mel_norm_file is not None and os.path.exists(mel_norm_file):
+            self.mel_norms = torch.load(mel_norm_file, weights_only=True)
+        return self.mel_norms
 
     @torch.no_grad()
     def forward(self, state):
@@ -177,15 +182,17 @@ class CanonicalTorchMelSpectrogram(Injector):
             inp = inp.squeeze(1)
         assert len(inp.shape) == 2
         mel = self.mel_spectrogram_torch(inp)
-        if self.mel_norms is not None:
-            if isinstance(self.mel_norms, torch.Tensor):
-                self.mel_norms = self.mel_norms.to(mel.device)
-                mel = mel / self.mel_norms.unsqueeze(0).unsqueeze(-1)
+        mel_norms = self.load_mel_norms(self.mel_norm_file)
+        if mel_norms is not None:
+            if isinstance(mel_norms, torch.Tensor):
+                mel_norms = mel_norms.to(mel.device)
+                mel = mel / mel_norms.unsqueeze(0).unsqueeze(-1)
             else:
-                assert len(self.mel_norms) == 2
-                mean = self.mel_norms["mean"].to(mel.device)[:, None]
-                stddev = self.mel_norms["stddev"].to(mel.device)[:, None]
+                assert len(mel_norms) == 2
+                mean = mel_norms["mean"].to(mel.device)[:, None]
+                stddev = mel_norms["std_dev"].to(mel.device)[:, None]
                 mel = (mel - mean) / stddev
+
         return {"mel": mel, "out": mel}
 
     def mel_spectrogram_torch(self, x):
