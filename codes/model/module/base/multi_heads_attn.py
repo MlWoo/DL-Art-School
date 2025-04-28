@@ -270,11 +270,11 @@ class MultiHeadAttn(nn.Module):
         self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
 
     def reset_parameters(self):
+        bound = 1.0 / math.sqrt(self.n_state)
         if self.attn_func_type > 7:
             nn.init.kaiming_uniform_(self.inner_proj_kv.op.weight[: self.n_state, :], a=math.sqrt(5))
             nn.init.kaiming_uniform_(self.inner_proj_kv.op.weight[self.n_state :, :], a=math.sqrt(5))
             nn.init.kaiming_uniform_(self.inner_proj_q.op.weight, a=math.sqrt(5))
-            bound = 1.0 / math.sqrt(self.n_state)
             nn.init.uniform_(self.inner_proj_kv.op.bias, -bound, bound)
             nn.init.uniform_(self.inner_proj_q.op.bias, -bound, bound)
         elif self.attn_func_type > 3:
@@ -289,7 +289,6 @@ class MultiHeadAttn(nn.Module):
                 self.inner_proj_qkv.op.weight[self.n_state : (self.n_state * 2), :], a=math.sqrt(5)
             )
             nn.init.kaiming_uniform_(self.inner_proj_qkv.op.weight[(self.n_state * 2) :, :], a=math.sqrt(5))
-            bound = 1.0 / math.sqrt(self.n_state)
             nn.init.uniform_(self.inner_proj_qkv.op.bias, -bound, bound)
         nn.init.kaiming_uniform_(self.proj.op.weight, a=math.sqrt(5))
         bound = 1.0 / math.sqrt(self.out_size)
@@ -449,20 +448,19 @@ class MultiHeadAttn(nn.Module):
 
     def post_attn_context(self, context, attn, num_attn: int = 0):
         context = self.proj(context)
-        if num_attn == -1 or num_attn >= attn.shape[0]:
+        if attn is None or num_attn == 0 or num_attn < -1:
+            return self.cxt_dropout(context), None
+        elif num_attn == -1 or num_attn >= attn.shape[0]:
             logger.info(
                 f"It's very slow to use num_attn: {num_attn} to record all attention weights when formal training."
             )
             return self.cxt_dropout(context), attn.detach().cpu()
-        elif num_attn == 0 or num_attn < -1:
-            return self.cxt_dropout(context), None
         else:
             return self.cxt_dropout(context), attn.detach()[:num_attn].cpu()
 
     def _apply_rotary_embedding(self, hidden_states, relative_position_embeddings):
         batch_size, sequence_length, hidden_size = hidden_states.size()
         hidden_states = hidden_states.view(batch_size, sequence_length, self.num_heads, self.head_size)
-
         cos = relative_position_embeddings[0, :sequence_length, ...]
         sin = relative_position_embeddings[1, :sequence_length, ...]
 
@@ -495,7 +493,7 @@ class MultiHeadAttn(nn.Module):
                 query,
                 key,
                 value,
-                score_mask=score_mask,
+                attn_mask=score_mask,
                 dropout_p=self.attn_dropout_p if self.training else 0.0,
                 is_causal=False,
             )

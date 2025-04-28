@@ -286,7 +286,7 @@ class RotaryPositionalEncoding(nn.Module):
         sequence_length = hidden_states.shape[1]
 
         if sequence_length == self.cached_sequence_length and self.cached_rotary_positional_encoding is not None:
-            return self.cached_rotary_positional_encoding
+            return hidden_states, self.cached_rotary_positional_encoding
 
         self.cached_sequence_length = sequence_length
         # encodings are computed in the dtype of the inv_freq constant
@@ -298,4 +298,4 @@ class RotaryPositionalEncoding(nn.Module):
         sin_encodings = encodings.sin()[:, None, None, :]
         # Computed encodings are cast to the dtype of the hidden state inputs
         self.cached_rotary_positional_encoding = torch.stack([cos_encodings, sin_encodings]).type_as(hidden_states)
-        return self.cached_rotary_positional_encoding
+        return hidden_states, self.cached_rotary_positional_encoding

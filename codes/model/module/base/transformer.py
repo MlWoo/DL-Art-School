@@ -169,7 +169,6 @@ class AbcResAttnBlock(nn.Module, metaclass=ABCMeta):
     ):
         # B T C
         outter_score_mask = get_outter_score_mask(outter_score_mask, x_mask, kv_mask)
-
         # macaron_ffn module
         if self.macaron_ffn is not None:
             residual = x
@@ -340,6 +339,7 @@ class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
     ATTN_CLS_TYPE_MAP = {
         "base": MultiHeadAttn,
         "wo-pos": MultiHeadAttn,
+        "rope": MultiHeadAttn,
         "rpr": RelativePositionMultiHeadAttn,
         "rpr-native": NativeRelativePositionMultiHeadAttn,
     }
@@ -1022,7 +1022,8 @@ class Transformer(nn.Module):
                 chunkwise_len=chunkwise_size,
             )
         elif attn_type == "rope":
-            self.pos_enc = RotaryPositionalEncoding(num_attn_head_dim * num_attention_heads, base=10000)
+            self.pos_enc = RotaryPositionalEncoding(num_attn_head_dim, base=10000)
+            attn_func_type = attn_func_type + 4
         elif attn_type == "rpr-native":
             self.x_scale = math.sqrt(num_attn_in_dim)
         elif attn_type == "wo-pos":

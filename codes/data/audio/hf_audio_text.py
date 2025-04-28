@@ -21,7 +21,8 @@ T_co = TypeVar("T_co", covariant=True)
 Tensor = torch.Tensor
 
 
-def rm_punctuation(text, dataset_name):
+def rm_punctuation(eg, dataset_name):
+    text = eg["text"]
     data_dict = {}
     if dataset_name == "GigaSpeech":
         data_dict["text"] = re.sub(r"<.*?>", "", text)
@@ -203,7 +204,7 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
                 writer_batch_size=192,
                 desc="add speech token length",
             )
-        else:
+        elif "duration" in dataset.column_names:
             dataset = dataset.map(
                 lambda eg: {
                     "speech_token_length": int(round(eg["duration"] * self.token_frame_rate, 3)),
@@ -211,18 +212,29 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
                 num_proc=16,
                 batch_size=32,
                 writer_batch_size=192,
-                desc="add length",
+                desc="add speech token length",
             )
+        elif "begin_time" in dataset.column_names and "end_time" in dataset.column_names:
+            dataset = dataset.map(
+                lambda eg: {
+                    "speech_token_length": int(round((eg["end_time"] - eg["begin_time"]) * self.token_frame_rate, 3)),
+                },
+                num_proc=16,
+                batch_size=32,
+                writer_batch_size=192,
+                desc="add speech token length",
+            )
+        else:
+            raise ValueError("No duration or begin_time and end_time in dataset")
 
         if kwargs.get("rm_punc", False):
             dataset = dataset.map(
                 partial(rm_punctuation, dataset_name=self.name),
-                num_proc=16,
+                num_proc=32,
                 batch_size=32,
                 writer_batch_size=192,
                 desc="rm punctuation",
             )
-
         return dataset
 
     def layout_data(self, asr_input_ids, text_token):

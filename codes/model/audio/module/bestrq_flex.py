@@ -241,9 +241,9 @@ class BestRqConformerEncoder(nn.Module):
         conv_hidden_size: List[int] = [8, 32],
         layerdrop: float = 0.0,  # unused
         ffn_dim: Optional[int] = None,
-        proj_dropout_p: float = 0.1,
-        cxt_dropout_p: float = 0.1,
-        ffn_dropout_p: float = 0.1,
+        proj_dropout_p: float = 0.0,
+        cxt_dropout_p: float = 0.0,
+        ffn_dropout_p: float = 0.0,
         pos_dropout_p: float = 0.0,
         causal: bool = True,
         window_size: int = 64,
