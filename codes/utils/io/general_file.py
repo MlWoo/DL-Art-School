@@ -10,6 +10,7 @@ import torch
 from scipy.io import wavfile
 from torchvision.utils import save_image
 
+from .fileio import PathManager
 from .mfs import GFile, isdir, listdir
 
 _torch_save = torch.save
@@ -123,9 +124,16 @@ def torch_load(path, map_location=torch.device("cpu"), default_restore_dir=None,
     return checkpoint
 
 
-def torch_save(dicts, checkpoint_path):
-    with GFile(f"{checkpoint_path}", "wb") as f:
-        vio = io.BytesIO()
-        _torch_save(dicts, vio)
-        f.write(vio.getvalue())
-        vio.close()
+def torch_save(dicts, checkpoint_path, async_file=False):
+    if async_file:
+        with PathManager.opena(f"{checkpoint_path}", "wb") as f:
+            vio = io.BytesIO()
+            _torch_save(dicts, vio)
+            f.write(vio.getvalue())
+            vio.close()
+    else:
+        with GFile(f"{checkpoint_path}", "wb") as f:
+            vio = io.BytesIO()
+            _torch_save(dicts, vio)
+            f.write(vio.getvalue())
+            vio.close()

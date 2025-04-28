@@ -6,6 +6,7 @@ import torch.nn as nn
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn.parallel.distributed import DistributedDataParallel
 from utils.distributed import dist_utils, map_to_device, optimizer_to
+from utils.io import torch_save
 from utils.options import opt_get
 from utils.path_ext import copy_files_to_server
 
@@ -93,7 +94,7 @@ class BaseTrainer:
         state_dict = network.state_dict()
         for key, param in state_dict.items():
             state_dict[key] = param.cpu()
-        torch.save(state_dict, save_path)
+        torch_save(state_dict, save_path, async_file=True)
         if network_label not in self.save_history.keys():
             self.save_history[network_label] = []
         self.save_history[network_label].append(save_path)
@@ -163,7 +164,7 @@ class BaseTrainer:
             state["amp"] = amp.state_dict()
         save_filename = "{}.state".format(opt_get(state, ["iter"], "no_step_provided"))
         save_path = os.path.join(self.opt["path"]["training_state"], save_filename)
-        torch.save(map_to_device(state, "cpu"), save_path)
+        torch_save(map_to_device(state, "cpu"), save_path, async_file=True)
         if "__state__" not in self.save_history.keys():
             self.save_history["__state__"] = []
         self.save_history["__state__"].append(save_path)

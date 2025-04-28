@@ -203,6 +203,17 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
                 writer_batch_size=192,
                 desc="add speech token length",
             )
+        else:
+            dataset = dataset.map(
+                lambda eg: {
+                    "speech_token_length": int(round(eg["duration"] * self.token_frame_rate, 3)),
+                },
+                num_proc=16,
+                batch_size=32,
+                writer_batch_size=192,
+                desc="add length",
+            )
+
         if kwargs.get("rm_punc", False):
             dataset = dataset.map(
                 partial(rm_punctuation, dataset_name=self.name),
@@ -211,6 +222,7 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
                 writer_batch_size=192,
                 desc="rm punctuation",
             )
+
         return dataset
 
     def layout_data(self, asr_input_ids, text_token):
