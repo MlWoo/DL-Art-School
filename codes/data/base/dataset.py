@@ -12,14 +12,16 @@ def is_numpy_array(data):
     return isinstance(data, np.ndarray)
 
 
-def sanity_check_merge_dict_item(dict1, dict2):
+def sanity_check_merge_dict_item(dict1, dict2, offset=0):
     for k2, v2 in dict2.items():
         if k2 in dict1:
             v1 = dict1[k2]
             if isinstance(v1, list) and isinstance(v2, list):
+                v2 = [i + offset for i in v2]
                 dict1[k2] = v1 + v2
             elif isinstance(v1, np.ndarray) and isinstance(v2, np.ndarray):
-                dict1[k2] = np.concatenate(v1, v2)
+                v2 = v2 + offset
+                dict1[k2] = np.concatenate((v1, v2))
             else:
                 raise ValueError(f"The item {k2} does not occur in different datasets")
 
@@ -57,15 +59,23 @@ class ConcatDataset(Dataset):
         self.dataset_len = 0
         self.cumulative_sizes = []
         self.info_dict = dict()
+        self.phases_indice_dict = dict()
         for i, dataset in enumerate(datasets):
             if i == 0:
                 self.info_dict = copy.deepcopy(dataset.info_dict)
+                self.phases_indice_dict = copy.deepcopy(dataset.phases_indice_dict)
             else:
                 sanity_check_merge_dict_item(self.info_dict, dataset.info_dict)
+                sanity_check_merge_dict_item(
+                    self.phases_indice_dict, dataset.phases_indice_dict, offset=self.dataset_len
+                )
             self.dataset_len += dataset.dataset_len
             self.cumulative_sizes.append(self.dataset_len)
 
         self.num_datasets = len(datasets)
+
+    def __len__(self):
+        return self.dataset_len
 
     def __collect__(self, dataset_indices, sample_indices_indices):
         dataset_bucket = [[] for _ in range(self.num_datasets)]

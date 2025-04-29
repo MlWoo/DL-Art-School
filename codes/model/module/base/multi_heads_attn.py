@@ -186,6 +186,7 @@ class MultiHeadAttn(nn.Module):
         channel_last: bool = True,
         spectral_norm: bool = False,
         window_size: int = 5,
+        lookforward_size: Optional[int] = None,
         *args,
         **kawrgs,
     ):
@@ -264,6 +265,7 @@ class MultiHeadAttn(nn.Module):
         self.window_size = window_size
 
         self.sample_t = 1
+        self.lookforward_size = lookforward_size
         self.channel_last = channel_last
         self.reset_parameters()
         self.score_mask_value = float("-inf")
@@ -429,6 +431,7 @@ class MultiHeadAttn(nn.Module):
                     sample,
                     self.sample_t,
                     self.window_size,
+                    self.lookforward_size,
                 )
                 if outter_score_mask is not None and inner_score_mask is not None:
                     score_mask = torch.logical_and(inner_score_mask, outter_score_mask)
@@ -650,6 +653,7 @@ class RelativePositionMultiHeadAttn(MultiHeadAttn):
         channel_last: bool = True,
         spectral_norm: bool = False,
         window_size: int = 5,
+        lookforward_size: Optional[int] = None,
         zero_triu: bool = False,
         max_len: int = 5000,
     ):
@@ -666,6 +670,7 @@ class RelativePositionMultiHeadAttn(MultiHeadAttn):
             attn_func_type=attn_func_type,
             spectral_norm=spectral_norm,
             window_size=window_size,
+            lookforward_size=lookforward_size,
             channel_last=channel_last,
         )
         self.zero_triu = zero_triu

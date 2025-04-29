@@ -392,6 +392,7 @@ class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
         padding_mode: str = "zeros",
         chunkwise_size: Optional[int] = None,
         stream_chunk_size: Optional[int] = None,
+        lookforward_size: Optional[int] = None,
         channel_last: bool = True,
         spectral_norm: bool = False,
         window_size: int = 5,
@@ -463,6 +464,7 @@ class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
                 window_size=window_size,
                 zero_triu=zero_triu,
                 max_len=max_len,
+                lookforward_size=lookforward_size,
             )
             attn_layer = self.ATTN_CLS_TYPE_MAP[attn_type](**attn_kwargs)
             cls_res_attn_block = self.choose_res_block()
@@ -499,6 +501,7 @@ class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
         self.channel_last = channel_last
         self.chunkwise_size = chunkwise_size
         self.stream_chunk_size = stream_chunk_size
+        self.lookforward_size = lookforward_size
 
     def get_kwargs(self, init_func, local_vars):
         module_kwargs = inspect.getfullargspec(init_func).args
@@ -519,6 +522,7 @@ class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
             scores_mask = self.layers[0].attn.scores_mask
             window_size = self.layers[0].attn.window_size
             sample_t = self.layers[0].attn.sample_t
+            lookforward_size = self.layers[0].attn.lookforward_size
             seq_l = x.shape[1]
             device = x.device
 
@@ -537,6 +541,7 @@ class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
                         sample,
                         sample_t,
                         window_size,
+                        lookforward_size,
                     )
 
                     if folded_chunk_inner_score_mask is not None:
@@ -561,6 +566,7 @@ class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
                     sample,
                     sample_t,
                     window_size,
+                    lookforward_size,
                 )
                 if self.stream_chunk_size is not None:
                     if self.channel_last:
@@ -636,6 +642,7 @@ class TransformerBlocks(AbcTransformerBlocks):
         channel_last: bool = True,
         spectral_norm: bool = False,
         window_size: int = 5,
+        lookforward_size: Optional[int] = None,
         zero_triu: bool = False,
         max_len: int = 1024,
     ):
@@ -756,6 +763,7 @@ class AdaptLNTransformerBlocks(AbcTransformerBlocks):
         chunkwise_size: Optional[int] = None,
         spectral_norm: bool = False,
         window_size: int = 5,
+        lookforward_size: Optional[int] = None,
         zero_triu: bool = False,
         max_len: int = 1024,
     ):
@@ -895,6 +903,7 @@ class ResAdaptTransformerBlocks(AbcTransformerBlocks):
         chunkwise_size: Optional[int] = None,
         spectral_norm: bool = False,
         window_size: int = 5,
+        lookforward_size: Optional[int] = None,
         zero_triu: bool = False,
         max_len: int = 1024,
     ):
@@ -989,6 +998,7 @@ class Transformer(nn.Module):
         padding_mode: str = "zeros",
         chunkwise_size: Optional[int] = None,
         stream_chunk_size: Optional[int] = None,
+        lookforward_size: Optional[int] = None,
         norm_groups: int = 0,
         pos_type: str = "base",
         pos_dropout_p: float = 0.0,
@@ -1061,6 +1071,7 @@ class Transformer(nn.Module):
             final_LN=final_LN,
             window_size=window_size,
             max_len=max_len,
+            lookforward_size=lookforward_size,
         )
         self.attn_type = attn_type
 
@@ -1151,6 +1162,7 @@ class TransformerCompile(nn.Module):
         padding_mode: str = "zeros",
         chunkwise_size: Optional[int] = None,
         stream_chunk_size: Optional[int] = None,
+        lookforward_size: Optional[int] = None,
         norm_groups: int = 0,
         pos_type: str = "base",
         pos_dropout_p: float = 0.0,
@@ -1223,6 +1235,7 @@ class TransformerCompile(nn.Module):
             final_LN=final_LN,
             window_size=window_size,
             max_len=max_len,
+            lookforward_size=lookforward_size,
         )
         self.layers = self.blocks.layers
 

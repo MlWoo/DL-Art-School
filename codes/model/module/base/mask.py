@@ -62,7 +62,7 @@ def create_batch_segmented_attention_mask(input_ids, eos_token_id=5000):
     return causal_mask & same_segment
 
 
-def get_inner_score_mask(mask, q_l, kv_l, device, sample, sample_t, offset_t=None):
+def get_inner_score_mask(mask, q_l, kv_l, device, sample, sample_t, offset_t=None, offset_tf=None):
     # returns a mask of shape 1 x 1 x q_l x kv_l or None if masking is not needed.
     if mask is None or q_l == 1:
         return None
@@ -73,12 +73,14 @@ def get_inner_score_mask(mask, q_l, kv_l, device, sample, sample_t, offset_t=Non
             offset = sample_t - q_l if sample else max(kv_l - q_l, 0)
         else:
             offset = offset_t
+        if offset_tf is None:
+            offset_tf = offset
         ones = torch.ones(q_l, kv_l, device=device)
         if mask in ["autoregressive", "ar"]:
             # Masked dense
             mask = ones.tril(offset)
         elif mask == "window":
-            mask = ones.triu(-1 * offset).tril(offset)
+            mask = ones.triu(-1 * offset).tril(offset_tf)
         elif mask == "window_ar":
             mask = ones.triu(-1 * offset + 1).tril(0)
         else:

@@ -255,6 +255,7 @@ class BestRqConformerEncoder(nn.Module):
         channel_last: bool = True,
         conv_hidden_act: str = "gelu",
         stream_chunk_size: Optional[int] = None,
+        lookforward_size: Optional[int] = None,
         preconformer_input_feature_projection: bool = False,  # unused
         no_scale_embedding: bool = False,  # unused
         rotary_embedding_base: int = 10000,  # unused
@@ -351,11 +352,12 @@ class BestRqConformerEncoder(nn.Module):
                 conv_module_kernel_size=conv_module_kernel_size,
                 causal=causal,
                 padding_mode=padding_mode,
-                stream_chunk_size=stream_chunk_size * self.reduction_factors if stream_chunk_size is not None else None,
-                window_size=window_size * self.reduction_factors if window_size is not None else None,
                 max_len=max_source_positions,
                 norm_groups=norm_groups,
+                stream_chunk_size=stream_chunk_size * self.reduction_factors if stream_chunk_size is not None else None,
+                window_size=window_size * self.reduction_factors if window_size is not None else None,
                 chunkwise_size=chunkwise_size * self.reduction_factors if chunkwise_size is not None else None,
+                lookforward_size=lookforward_size * self.reduction_factors if lookforward_size is not None else None,
             )
         else:
             self.pre_conformer = None
@@ -395,6 +397,7 @@ class BestRqConformerEncoder(nn.Module):
             window_size=window_size,
             max_len=max_source_positions // self.reduction_factors,
             norm_groups=norm_groups,
+            lookforward_size=lookforward_size,
         )
         if codebook_dim > 0:
             self.output_proj = nn.Linear(hidden_size, codebook_dim)

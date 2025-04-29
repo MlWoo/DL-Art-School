@@ -211,24 +211,24 @@ class BestRqFramework(BaseModule):
             # [B, L, 80]
             batch_size, dim, num_steps = input_values.size()
 
-            if self.debug_info is not None and self.num_visual_debug > 0:
+            if self.debug_info is not None and self.debug_info.get("will_visual", False) and self.num_visual_debug > 0:
                 log_num = min(16, batch_size)
                 if log_num < 4:
-                    self.debug_info["input_values"] = input_values.detach()[:1].reshape(1, 1, 1, dim, num_steps)
-                    self.debug_info["input_lengths"] = input_lengths.detach()[:1]
-                    self.debug_info["dim_lengths"] = torch.LongTensor([dim])
+                    self.debug_info["input_values"] = input_values.detach()[:1].reshape(1, 1, 1, dim, num_steps).cpu()
+                    self.debug_info["input_lengths"] = input_lengths.detach()[:1].cpu()
+                    self.debug_info["dim_lengths"] = torch.LongTensor([dim]).cpu()
                 else:
                     log_rows = log_num // 4
-                    self.debug_info["input_values"] = input_values.detach()[: (4 * log_rows)].reshape(
-                        1, log_rows, 4, dim, num_steps
+                    self.debug_info["input_values"] = (
+                        input_values.detach()[: (4 * log_rows)].reshape(1, log_rows, 4, dim, num_steps).cpu()
                     )
-                    self.debug_info["input_lengths"] = input_lengths.detach()[: (4 * log_rows)]
+                    self.debug_info["input_lengths"] = input_lengths.detach()[: (4 * log_rows)].cpu()
                     self.debug_info["dim_lengths"] = torch.LongTensor(
                         [
                             dim,
                         ]
                         * (4 * log_rows)
-                    )
+                    ).cpu()
 
             if self.chunkwise_size is not None:
                 chunks = (num_steps - 1) // self.chunkwise_size + 1
@@ -270,7 +270,17 @@ class BestRqFramework(BaseModule):
             input_lengths=recover_input_lengths,
             num_attn=1 if self.run_info.get("will_visual", False) else 0,
         )
+
+        if self.debug_info is not None:
+            self.debug_info["input_size"] = input_values.shape[0] * input_values.shape[1]
+            self.debug_info["input_length"] = input_values.shape[1]
+            if self.debug_info.get("will_visual", False):
+                self.debug_info["attn"] = safe_stack(encoder_out.attentions, dim=1)
+                self.debug_info["reduced_lengths"] = input_lengths.detach() // self.reduction_factors
+                self.debug_info["score_mask"] = safe_stack(encoder_out.score_mask, dim=1)
+
         last_hidden_state = encoder_out.last_hidden_state
+        del encoder_out
         targets = last_hidden_state[time_mask_indices].contiguous()
 
         losses = 0.0
@@ -278,13 +288,6 @@ class BestRqFramework(BaseModule):
             pred_labels = out_linear(targets)
             loss = F.cross_entropy(pred_labels, labels)
             losses = losses + loss
-
-        if self.debug_info is not None:
-            self.debug_info["input_size"] = input_values.shape[0] * input_values.shape[1]
-            self.debug_info["input_length"] = input_values.shape[1]
-            self.debug_info["attn"] = safe_stack(encoder_out.attentions, dim=1)
-            self.debug_info["reduced_lengths"] = input_lengths.detach() // self.reduction_factors
-            self.debug_info["score_mask"] = safe_stack(encoder_out.score_mask, dim=1)
 
         return pred_labels, losses
 

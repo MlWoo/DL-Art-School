@@ -1,3 +1,5 @@
+import os  # noqa: F401
+import os.path as osp
 import re
 import time
 from functools import partial
@@ -164,6 +166,39 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
             )
 
         self.dataset = dataset
+
+        # filtered min duration
+        durations = dataset["duration"] if "duration" in dataset.features else dataset["duration_ms"] / 1000
+        min_mask = durations > self.min_duration + (1.0 / self.sr)
+
+        if self.max_duration is None or self.max_duration < 0.0:
+            mask = min_mask
+        else:
+            max_mask = durations < self.max_duration - (1.0 / self.sr)
+            mask = np.logical_and(min_mask, max_mask)
+
+        self.files = np.where(mask)[0]
+        self.durations = durations[mask]
+
+        frame_lengths = []
+        hop_length = opt_get(opt, ["audio_process", "hop_length"], 160)
+
+        frame_lengths = np.ceil(self.durations * self.sr / hop_length).astype(np.int32)
+        self.feature_dim = opt_get(opt, ["audio_process", "mel_bins"], 128)
+
+        self.sample_duration = opt_get(opt, ["sample_duration"], None)
+
+        sample_frame_length = (
+            None
+            if self.sample_duration is None
+            else np.ceil(self.sample_duration * self.sr / hop_length).astype(np.int32)
+        )
+
+        self.info_dict = dict(
+            frame_length=frame_lengths,
+            sample_frame_length=np.clip(frame_lengths, 0, sample_frame_length),
+        )
+
         self.dataset_len = len(dataset)
 
         self.phases_indice_dict = self.create_datasets(
@@ -173,11 +208,6 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
             seed=opt_get(opt, ["seed"], 1234),
         )
 
-        self.info_dict = dict()
-        info_list = []
-        for key in info_list:
-            self.info_dict[key] = dataset[key]
-
         self.info_dict["text_token_length"] = dataset["text_token_length"]
         self.info_dict["speech_token_length"] = dataset["speech_token_length"]
 
@@ -186,7 +216,7 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
         self.meta_path = opt_get(opt, ["meta_path"], None)
         self.stand_dict = opt_get(opt, ["stand_dict"], None)
         if opt_get(opt, ["shrink"], False):
-            dataset = dataset.select_columns(self.read_keys + info_list)
+            dataset = dataset.select_columns(self.read_keys)
         self.sorted = opt_get(opt, ["sorted"], False)
         if self.sorted:
             self.logger.info("It's dangerouts to sort sampler idx when using buffer_batch_group > 1.")
@@ -224,6 +254,15 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
                 writer_batch_size=192,
                 desc="add speech token length",
             )
+            dataset = dataset.map(
+                lambda eg: {
+                    "duration": eg["end_time"] - eg["begin_time"],
+                },
+                num_proc=16,
+                batch_size=32,
+                writer_batch_size=192,
+                desc="add duration",
+            )
         else:
             raise ValueError("No duration or begin_time and end_time in dataset")
 
@@ -236,6 +275,107 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
                 desc="rm punctuation",
             )
         return dataset
+
+    def get_audio_chunk(self, indice, item=None, offsets=None):
+        meta_list = self.dataset[indice]
+
+        audio_ready = False
+        if "path" in meta_list:
+            paths = meta_list["path"]
+        elif "audio_path" in meta_list:
+            paths = meta_list["audio_path"]
+        elif "audio_filepath" in meta_list:
+            paths = meta_list["audio_filepath"]
+        elif "audio" in meta_list:
+            audio_ready = True
+        else:
+            raise ValueError(f"No path found in meta_list: {meta_list}")
+
+        if audio_ready:
+            data_group = []
+            path_group = []
+            audio_lengths = []
+            begin_time_group = []
+            duration_group = []
+
+            if offsets is None:
+                offsets = [0] * len(meta_list["audio"])
+
+            for i, (audio_meta, offset) in enumerate(zip(meta_list["audio"], offsets)):
+                path = audio_meta["path"]
+                audio = audio_meta["array"]
+                if audio.ndim == 1:
+                    audio = audio.reshape(1, -1)
+                sr = audio_meta["sampling_rate"]
+
+                audio_length = audio.shape[-1]
+                offset = min(offset, 0)
+
+                if audio_length > self.sample_duration * sr + offset:
+                    offset = offset + np.random.rand() * (audio_length - self.sample_duration * sr - offset)
+                    duration = self.sample_duration
+                    sample_length = int(self.sample_duration * sr)
+                else:
+                    sample_length = audio_length - offset
+                    duration = round(sample_length / sr, 2)
+
+                try:
+                    data = audio[:, int(offset) : int(offset + sample_length)].reshape(1, -1)
+                    assert data.shape == (
+                        self.channels,
+                        sample_length,
+                    ), f"Expected {(self.channels, sample_length)}, got {data.shape}"
+                except:  # noqa: E722
+                    continue
+
+                data_group.append(data)
+                path_group.append(path)
+                audio_lengths.append(sample_length)
+                begin_time_group.append(round(offset / sr, 2))
+                duration_group.append(duration)
+            return dict(
+                audio=data_group,
+                path=path_group,
+                audio_lengths=audio_lengths,
+                begin_time=begin_time_group,
+                duration=duration_group,
+            )
+        else:
+            begin_times = meta_list["begin_time"]
+            durations = meta_list["duration"]
+
+            data_group = []
+            path_group = []
+            audio_lengths = []
+            begin_time_group = []
+            duration_group = []
+            for path, begin_time, duration in zip(paths, begin_times, durations):
+                if duration > self.sample_duration:
+                    begin_time = begin_time + np.random.rand() * (duration - self.sample_duration)
+                    duration = self.sample_duration
+                audio_offset = int(begin_time * self.sr)
+                duration_sample = int(duration * self.sr)
+                if self.dataset_prefix is not None:
+                    path = osp.join(self.dataset_prefix, path)
+                data, sr = load_audio(
+                    path, sr=self.sr, offset=audio_offset, resample=True, duration=duration_sample, check_duration=False
+                )
+                if data is None:
+                    continue
+                data = data[:, : int((self.sample_duration * self.sr))]
+                data = (data / max(0.1, np.abs(data).max())) * 0.9
+                data_group.append(data)
+                path_group.append(path)
+                audio_lengths.append(data.shape[1])
+                begin_time_group.append(begin_time)
+                duration_group.append(duration)
+            return dict(
+                audio=data_group,
+                path=path_group,
+                audio_lengths=audio_lengths,
+                begin_time=begin_time_group,
+                duration=duration_group,
+            )
 
     def layout_data(self, asr_input_ids, text_token):
         input_type = []
@@ -260,7 +400,7 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
         return input_tokens, output_tokens, input_type
 
     def postprocess_items(self, values_dict: Dict[str, List[Any]], **kwargs) -> Dict[str, Any]:
-        if "source" in values_dict:
+        if "audio" not in values_dict and "source" in values_dict:
             source = values_dict.pop("source")
             audios = []
             for _source in source:
@@ -301,8 +441,16 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
 
         return values_dict
 
+    def get_index_offset(self, indice):
+        # For a given dataset item and shift, return song index and offset within song
+        file_indice = []
+        for index in indice:
+            file_indice.append(self.files[index])
+        return file_indice
+
     def get_item(self, item):
-        return self.dataset[item]
+        index = self.get_index_offset(item)
+        return self.get_audio_chunk(index, item)
 
 
 @DATASETS.register_module()

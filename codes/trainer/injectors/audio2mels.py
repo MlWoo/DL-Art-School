@@ -190,7 +190,10 @@ class CanonicalTorchMelSpectrogram(Injector):
             else:
                 assert len(mel_norms) == 2
                 mean = mel_norms["mean"].to(mel.device)[:, None]
-                stddev = mel_norms["std_dev"].to(mel.device)[:, None]
+                if "std_dev" in mel_norms:
+                    stddev = mel_norms["std_dev"].to(mel.device)[:, None]
+                else:
+                    stddev = mel_norms["stddev"].to(mel.device)[:, None]
                 mel = (mel - mean) / stddev
 
         return {"mel": mel, "out": mel}
@@ -225,14 +228,12 @@ class CanonicalTorchMelSpectrogram(Injector):
 
         x = torch.nn.functional.pad(x, (self.pad_audio, self.pad_audio), mode="reflect")
 
-        x = x.float()
-        window = hann_window[wnsize_dtype_device].float()
         spec = torch.stft(
-            x,
+            x.float(),
             self.filter_length,
             hop_length=self.hop_length,
             win_length=self.win_length,
-            window=window,
+            window=hann_window[wnsize_dtype_device].float(),
             center=self.center,
             pad_mode="reflect",
             normalized=False,

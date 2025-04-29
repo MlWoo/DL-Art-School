@@ -107,6 +107,7 @@ class Trainer:
         seed += self.rank
         """
         utils.set_random_seed(seed)
+        torch.set_num_threads(8)
 
         torch.backends.cudnn.benchmark = opt_get(opt, ["cuda_benchmarking_enabled"], True)
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -277,7 +278,6 @@ class Trainer:
             and self.rank <= 0
             and self.current_step % self.opt["logger"]["visual_debug_rate"] == 0
         )
-
         # training
         if self.profile:
             lr_update_time = time() - _t  # noqa: F841
@@ -640,7 +640,7 @@ class Trainer:
                         )
                     else:
                         self.logger.info(f"Found best {batch_size=} for {bucket_boundary=}")
-                    bucket_boundaries_batch_size_map[bucket_boundary.item()] = torch.LongTensor([batch_size])[0]
+                    bucket_boundaries_batch_size_map[bucket_boundary.item()] = batch_size
                     batch_sizes.append(batch_size)
                     found = True
                     break

@@ -4,7 +4,6 @@ import maybe_bnb as mbnb
 import torch
 from lion_pytorch import Lion
 from torch import distributed
-from torch.cuda.amp import GradScaler
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import Module
 from trainer.inject import create_injector
@@ -28,7 +27,8 @@ class ConfigurableStep(Module):
         self.gen_outputs = opt_step["generator_outputs"]
         self.loss_accumulator = LossAccumulator(buffer_sz=opt_get(opt_step, ["loss_log_buffer"], 50))
         self.optimizers = None
-        self.scaler = GradScaler(
+        self.scaler = torch.amp.GradScaler(
+            "cuda" if torch.cuda.is_available() else "cpu",
             enabled=self.opt["fp16"] or opt_get(self.opt, ["grad_scaler_enabled"], False),
             init_scale=opt_get(self.opt, ["scale"], 2**16),
         )
