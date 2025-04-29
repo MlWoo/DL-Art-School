@@ -73,6 +73,37 @@ def apply_chat_template(eg, tokenizer, audio_token):
     return tokens
 
 
+def add_duration_and_speech_token_length(eg, token_frame_rate):
+    duration = round(eg["end_time"] - eg["begin_time"], 3)
+    speech_token_length = int(round(duration * token_frame_rate, 3))
+    return {"duration": duration, "speech_token_length": speech_token_length}
+
+
+def process_speech_func(
+    eg,
+    token_frame_rate,
+    dataset_name,
+    rm_punc=False,
+):
+    if "duration" in eg:
+        duration = round(eg["duration"], 3)
+    elif "begin_time" in eg and "end_time" in eg:
+        duration = round(eg["end_time"] - eg["begin_time"], 3)
+    else:
+        raise ValueError("No duration or begin_time and end_time in dataset")
+
+    if "speech_token" in eg:
+        speech_token_length = len(eg["speech_token"])
+    else:
+        speech_token_length = int(round(duration * token_frame_rate, 3))
+
+    text = eg["text"]
+    if rm_punc and dataset_name == "GigaSpeech":
+        text = re.sub(r"<.*?>", "", text)
+
+    return {"duration": duration, "speech_token_length": speech_token_length, "text": text}
+
+
 @DATASETS.register_module()
 class HuggingfaceMinmoASRDataset(AudioABCDataset):
 
@@ -122,7 +153,7 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
 
         end_time = time.time()
         self.logger = get_root_logger()
-        self.logger.info(f"load {phase} dataset time: {end_time - start_time}")
+        self.logger.info(f"load {self.name} {phase} dataset time: {end_time - start_time}")
 
         dataset.set_format("np")
 
@@ -225,56 +256,18 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
         self.channels = opt_get(opt, ["channels"], 1)
 
     def normalize_dataset(self, dataset, **kwargs):
-        if "speech_token" in dataset.column_names:
-            dataset = dataset.map(
-                lambda eg: {
-                    "speech_token_length": len(eg["speech_token"]),
-                },
-                num_proc=16,
-                batch_size=32,
-                writer_batch_size=192,
-                desc="add speech token length",
-            )
-        elif "duration" in dataset.column_names:
-            dataset = dataset.map(
-                lambda eg: {
-                    "speech_token_length": int(round(eg["duration"] * self.token_frame_rate, 3)),
-                },
-                num_proc=16,
-                batch_size=32,
-                writer_batch_size=192,
-                desc="add speech token length",
-            )
-        elif "begin_time" in dataset.column_names and "end_time" in dataset.column_names:
-            dataset = dataset.map(
-                lambda eg: {
-                    "speech_token_length": int(round((eg["end_time"] - eg["begin_time"]) * self.token_frame_rate, 3)),
-                },
-                num_proc=16,
-                batch_size=32,
-                writer_batch_size=192,
-                desc="add speech token length",
-            )
-            dataset = dataset.map(
-                lambda eg: {
-                    "duration": eg["end_time"] - eg["begin_time"],
-                },
-                num_proc=16,
-                batch_size=32,
-                writer_batch_size=192,
-                desc="add duration",
-            )
-        else:
-            raise ValueError("No duration or begin_time and end_time in dataset")
-
-        if kwargs.get("rm_punc", False):
-            dataset = dataset.map(
-                partial(rm_punctuation, dataset_name=self.name),
-                num_proc=32,
-                batch_size=32,
-                writer_batch_size=192,
-                desc="rm punctuation",
-            )
+        dataset = dataset.map(
+            partial(
+                process_speech_func,
+                token_frame_rate=self.token_frame_rate,
+                dataset_name=self.name,
+                rm_punc=kwargs.get("rm_punc", False),
+            ),
+            num_proc=32,
+            batch_size=32,
+            writer_batch_size=192,
+            desc="add duration and speech token length",
+        )
         return dataset
 
     def get_audio_chunk(self, indice, item=None, offsets=None):

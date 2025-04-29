@@ -12,3 +12,14 @@ def share_parameters(src, dst, shared_keywords=[]):
             else:
                 dst_train_params.append(param)
     return dst_train_params
+
+
+def eval_decorator(fn):
+    def inner(model, *args, **kwargs):
+        was_training = model.training
+        model.eval()
+        out = fn(model, *args, **kwargs)
+        model.train(was_training)
+        return out
+
+    return inner
