@@ -222,6 +222,7 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
             self.logger.info("It's dangerouts to sort sampler idx when using buffer_batch_group > 1.")
         self.dataset = dataset
         self.file_path_key = opt_get(opt, ["file_path_key"], "id")
+        self.channels = opt_get(opt, ["channels"], 1)
 
     def normalize_dataset(self, dataset, **kwargs):
         if "speech_token" in dataset.column_names:
@@ -280,6 +281,7 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
         meta_list = self.dataset[indice]
 
         audio_ready = False
+
         if "path" in meta_list:
             paths = meta_list["path"]
         elif "audio_path" in meta_list:
@@ -288,20 +290,23 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
             paths = meta_list["audio_filepath"]
         elif "audio" in meta_list:
             audio_ready = True
+        elif "source" in meta_list:
+            paths = meta_list.pop("source")
         else:
             raise ValueError(f"No path found in meta_list: {meta_list}")
 
-        if audio_ready:
-            data_group = []
-            path_group = []
-            audio_lengths = []
-            begin_time_group = []
-            duration_group = []
+        data_group = []
+        path_group = []
+        audio_lengths = []
+        begin_time_group = []
+        duration_group = []
 
+        if audio_ready:
             if offsets is None:
                 offsets = [0] * len(meta_list["audio"])
 
-            for i, (audio_meta, offset) in enumerate(zip(meta_list["audio"], offsets)):
+            audio_metas = meta_list.pop("audio")
+            for i, (audio_meta, offset) in enumerate(zip(audio_metas, offsets)):
                 path = audio_meta["path"]
                 audio = audio_meta["array"]
                 if audio.ndim == 1:
@@ -310,7 +315,6 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
 
                 audio_length = audio.shape[-1]
                 offset = min(offset, 0)
-
                 if audio_length > self.sample_duration * sr + offset:
                     offset = offset + np.random.rand() * (audio_length - self.sample_duration * sr - offset)
                     duration = self.sample_duration
@@ -333,22 +337,10 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
                 audio_lengths.append(sample_length)
                 begin_time_group.append(round(offset / sr, 2))
                 duration_group.append(duration)
-            return dict(
-                audio=data_group,
-                path=path_group,
-                audio_lengths=audio_lengths,
-                begin_time=begin_time_group,
-                duration=duration_group,
-            )
         else:
-            begin_times = meta_list["begin_time"]
+            begin_times = meta_list["begin_time"] if "begin_time" in meta_list else meta_list["start"]
             durations = meta_list["duration"]
 
-            data_group = []
-            path_group = []
-            audio_lengths = []
-            begin_time_group = []
-            duration_group = []
             for path, begin_time, duration in zip(paths, begin_times, durations):
                 if duration > self.sample_duration:
                     begin_time = begin_time + np.random.rand() * (duration - self.sample_duration)
@@ -369,13 +361,17 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
                 audio_lengths.append(data.shape[1])
                 begin_time_group.append(begin_time)
                 duration_group.append(duration)
-            return dict(
-                audio=data_group,
-                path=path_group,
-                audio_lengths=audio_lengths,
-                begin_time=begin_time_group,
-                duration=duration_group,
-            )
+        data = dict(
+            audio=data_group,
+            path=path_group,
+            audio_lengths=audio_lengths,
+            begin_time=begin_time_group,
+            duration=duration_group,
+        )
+
+        data.update(**meta_list)
+
+        return data
 
     def layout_data(self, asr_input_ids, text_token):
         input_type = []
@@ -406,8 +402,12 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
             for _source in source:
                 audio, sr = torchaudio.load(_source)
                 audios.append(audio)
-            values_dict["audio"] = audios
-            values_dict["audio_lengths"] = [audio.shape[-1] for audio in audios]
+        elif "audio" in values_dict:
+            audios = values_dict.pop("audio")
+        else:
+            raise ValueError("No audio found in values_dict")
+        values_dict["audio"] = audios
+        values_dict["audio_lengths"] = [audio.shape[-1] for audio in audios]
         # file_names = values_dict.pop("file_names")
         if self.cache_text:
             assert self.text_key in values_dict
@@ -497,6 +497,10 @@ class HuggingfaceMinmoASRLhotseDataset(HuggingfaceMinmoASRDataset):
             desc="add source",
         )
         return dataset
+
+    def get_item(self, item):
+
+        return self.dataset[item]
 
 
 if __name__ == "__main__":

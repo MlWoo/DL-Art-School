@@ -240,8 +240,8 @@ class CanonicalTorchMelSpectrogram(Injector):
             onesided=True,
             return_complex=True,
         )
-        spec = spec.to(dtype=dtype)
-        spec = spec.abs()
+        spec = spec.abs().to(dtype=dtype)
         mels = torch.matmul(mel_basis[fmax_dtype_device], spec)
         mels = spectral_normalize_torch(mels)
+
         return mels

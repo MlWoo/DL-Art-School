@@ -269,6 +269,7 @@ class BestRqFramework(BaseModule):
             masked_input_values,
             input_lengths=recover_input_lengths,
             num_attn=1 if self.run_info.get("will_visual", False) else 0,
+            out_score_mask=True if self.run_info.get("will_visual", False) else False,
         )
 
         if self.debug_info is not None:

@@ -85,6 +85,7 @@ class ConcatDataset(Dataset):
             global_indices.append((dataset_idx, len(dataset_bucket[dataset_idx])))
             dataset_bucket[dataset_idx].append(sample_indices_idx)
             idx += 1
+
         data_bucket = []
         for dataset_idx, dataset_sample_indices in enumerate(dataset_bucket):
             if len(dataset_sample_indices) > 0:

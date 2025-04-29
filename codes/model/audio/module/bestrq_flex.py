@@ -418,7 +418,9 @@ class BestRqConformerEncoder(nn.Module):
                 apply_compile_transformer(self.pre_conformer)
             self.compiled = True
 
-    def forward(self, input_values, input_lengths=None, layer_idx: int = -1, num_attn: int = 0):
+    def forward(
+        self, input_values, input_lengths=None, layer_idx: int = -1, num_attn: int = 0, out_score_mask: bool = False
+    ):
         if not self.channel_last:
             input_values = input_values.permute(0, 2, 1)
 
@@ -446,7 +448,11 @@ class BestRqConformerEncoder(nn.Module):
             ), f"features mask {features_mask.shape}, features input {input_features.shape}"
 
         output_values, attn_tuple, score_mask_tuple = self.conformer(
-            x=input_features, x_mask=features_mask, layer_idx=layer_idx, num_attn=num_attn
+            x=input_features,
+            x_mask=features_mask,
+            layer_idx=layer_idx,
+            num_attn=num_attn,
+            out_score_mask=out_score_mask,
         )
         last_hidden_state = output_values[-1]
         if layer_idx == -1:
