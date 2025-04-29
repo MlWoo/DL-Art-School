@@ -1,4 +1,3 @@
-
 import math
 import random
 from math import sqrt
@@ -71,7 +70,7 @@ class RepresentationLearner(nn.Module):
         mask_time: int = 400,
         mask_prob: float = 0.0,
         stride_time: int = 10,
-        reconstructor_training: bool = True,
+        reconstructor_freeze: bool = True,
         ctc_zero_infinity: bool = True,
         ctc_loss_reduction: str = "mean",
         **kwargs,
@@ -215,7 +214,7 @@ class RepresentationLearner(nn.Module):
         else:
             self.run_info = None
 
-        if not reconstructor_training:
+        if reconstructor_freeze:
             set_requires_grad(self.reconstructor, False)
 
     def norm_data(self, x):

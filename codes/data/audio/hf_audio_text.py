@@ -190,9 +190,9 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
         if self.cache_text and self.tokenizers_dict is not None:
             dataset = dataset.map(
                 partial(cache_text_processor, tokenizers_dict=self.tokenizers_dict, audio_token=self.audio_token),
-                num_proc=16,
-                batch_size=32,
-                writer_batch_size=192,
+                num_proc=128,
+                batch_size=256,
+                writer_batch_size=1024,
                 desc="cache text",
             )
 
@@ -263,9 +263,9 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
                 dataset_name=self.name,
                 rm_punc=kwargs.get("rm_punc", False),
             ),
-            num_proc=32,
-            batch_size=32,
-            writer_batch_size=192,
+            num_proc=128,
+            batch_size=256,
+            writer_batch_size=1024,
             desc="add duration and speech token length",
         )
         return dataset

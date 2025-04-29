@@ -1,6 +1,7 @@
 import numpy as np
 import torch
-from vqtorch.nn import _VQBaseLayer
+
+from .vq_base import _VQBaseLayer
 
 
 def is_vq(m):

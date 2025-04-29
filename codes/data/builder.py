@@ -1,3 +1,5 @@
+import copy
+
 from utils.registry import Registry, build_from_cfg
 
 DATASETS = Registry("dataset", registor="DLAS")
@@ -32,9 +34,10 @@ def build_datasets(cfg, default_args=None):
         datasets_cfg.append(normal_cfg)
     else:
         for dataset_cfg in cfg["datasets_list"]:
-            dataset_cfg.update(common_dataset_cfg)
-            normal_cfg = dict(opt=dataset_cfg)
-            normal_cfg["type"] = dataset_cfg["mode"]
+            instance_cfg = copy.deepcopy(common_dataset_cfg)
+            instance_cfg.update(dataset_cfg)
+            normal_cfg = dict(opt=instance_cfg)
+            normal_cfg["type"] = instance_cfg["mode"]
             datasets_cfg.append(normal_cfg)
 
     if len(datasets_cfg) == 1:

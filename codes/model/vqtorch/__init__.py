@@ -3,7 +3,10 @@
 # [1] Straightening Out the Straight-Through Estimator:
 # Overcoming Optimization Challenges in Vector Quantized Networks, Huh et al. ICML2023
 ###
-
-from vqtorch.math_fns import *  # noqa
-from vqtorch.nn import *  # noqa
-from vqtorch.utils import *  # noqa
+from . import utils  # noqa
+from .affine import AffineTransform  # noqa
+from .gvq import GroupVectorQuant  # noqa
+from .math_fns import *  # noqa
+from .rvq import ResidualVectorQuant  # noqa
+from .vq import VectorQuant  # noqa
+from .vq_base import _VQBaseLayer  # noqa

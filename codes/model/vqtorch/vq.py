@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import vqtorch
-from vqtorch.dists import get_dist_fns
-from vqtorch.norms import with_codebook_normalization
 
 from .affine import AffineTransform
+from .dists import get_dist_fns
+from .norms import with_codebook_normalization
 from .vq_base import _VQBaseLayer
 
 
