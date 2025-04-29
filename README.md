@@ -12,6 +12,7 @@ The repository is used to train the audio model and much more clean and organize
 - [x] Support audio-text huggingface dataset(ASR, TTS, etc.).
 - [x] Support audio-only sample-level huggingface dataset(for SSL, like Best-RQ).
 - [ ] Support audio-only segment-level huggingface dataset(for audio reconstruction, like vocoder, vq-vae, etc.).
+- [ ] Support audio-text DPO dataset(for DPO, like Cosyvoice2).
 
 ### Training acceleration
 
@@ -30,8 +31,8 @@ The repository is used to train the audio model and much more clean and organize
 
 ### GPU memory (in avoid of OOM)
 
-- [x] Support re-trial training if OOM with gradient accumulation.
-- [ ] Support re-trial training if OOM with gradient checkpointing.
+- [x] Support re-trial training if OOM with gradient accumulation (single GPU).
+- [ ] Support re-trial training if OOM with gradient checkpointing (single GPU).
 
 ### Architectures
 
@@ -53,7 +54,7 @@ The repository is used to train the audio model and much more clean and organize
 - [x] Support wandb logging.
 - [x] Support log images.
 - [x] Support attention visualization.
-- [ ] Save checkpoint asynchronously.
+- [x] Save checkpoint asynchronously.
 - [ ] Support Top-K checkpoint saving.
 
 
@@ -65,6 +66,7 @@ check attention and score mask visualization in folder ![](res/)
 - [x] Support AR attention mask.
 - [x] Support window attention mask.
 - [x] Support stream-chunk attention mask.
+- [x] Support look-ahead attention mask.
 - [ ] Support chunk-wise attention mask.
 
 # Deep Learning Art School
