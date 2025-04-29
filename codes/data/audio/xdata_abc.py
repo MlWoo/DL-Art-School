@@ -359,3 +359,7 @@ class AudioABCDataset(torch.utils.data.Dataset[T_co], metaclass=ABCMeta):
         if sorted_subsets is not None:
             for subset in sorted_subsets:
                 self.sort_dataset(subset, sorted_length_type, descending)
+
+    def get_item(self, item):
+        indice, offset = self.get_index_offset(item)
+        return self.get_audio_chunk(indice, offset)

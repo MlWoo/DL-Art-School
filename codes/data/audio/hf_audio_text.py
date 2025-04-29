@@ -441,10 +441,6 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
             file_indice.append(self.files[index])
         return file_indice
 
-    def get_item(self, item):
-        index = self.get_index_offset(item)
-        return self.get_audio_chunk(index, item)
-
 
 @DATASETS.register_module()
 class HuggingfaceMinmoASRLhotseDataset(HuggingfaceMinmoASRDataset):
@@ -492,7 +488,6 @@ class HuggingfaceMinmoASRLhotseDataset(HuggingfaceMinmoASRDataset):
         return dataset
 
     def get_item(self, item):
-
         return self.dataset[item]
 
 
