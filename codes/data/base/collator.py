@@ -130,9 +130,14 @@ class Collator(object):
             elif isinstance(data[0], str):
                 collated[key] = data
             else:
-                if isinstance(data[0], (np.ndarray)):
+                if isinstance(data[0], (np.ndarray)) or isinstance(data[0], (torch.Tensor)):
                     try:
-                        tensors = [torch.from_numpy(d.copy()) for d in data]
+                        tensors = []
+                        for d in data:
+                            if isinstance(d, np.ndarray):
+                                tensors.append(torch.from_numpy(d.copy()))
+                            else:
+                                tensors.append(d)
                     except:  # noqa: E722
                         import pdb
 

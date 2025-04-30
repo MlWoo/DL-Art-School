@@ -122,22 +122,22 @@ class Conv1DBlock(nn.Module):
         n_in: int,
         n_out: int,
         kernel_size: int = 3,
-        padding: Optional[int] = None,
-        causal: bool = False,
-        padding_mode: str = "zeros",
         stride: int = 1,
         dilation: int = 1,
         groups: int = 1,
+        bias: bool = True,
+        padding: Optional[int] = None,
+        padding_mode: str = "zeros",
+        causal: bool = False,
         dropout_p: float = 0.0,
         dropout_mode: str = "norm",
         ops_seq: Tuple[str, ...] = ("conv", "bn", "relu", "dropout"),
         disable_afn: bool = False,
-        bias: bool = True,
         res: bool = False,
         channel_last: bool = False,
-        spectral_norm: bool = False,
-        weight_norm: bool = False,
+        weight_norm: str = "none",
         bn_momentum: Optional[float] = None,
+        norm_groups: int = 1,
     ):
         super().__init__()
         if padding is None:
@@ -165,9 +165,9 @@ class Conv1DBlock(nn.Module):
                     causal=causal,
                     padding_mode=padding_mode,
                 )
-                if spectral_norm:
-                    op = nn.utils.parametrizations.spectral_norm(op)
-                elif weight_norm:
+                if weight_norm == "spectral":
+                    op = nn.utils.spectral_norm(op)
+                elif weight_norm == "weight":
                     op = nn.utils.weight_norm(op)
                 norm_features = n_out
             elif op_name == "bn":
@@ -177,6 +177,10 @@ class Conv1DBlock(nn.Module):
                     op = nn.BatchNorm1d(norm_features, momentum=bn_momentum)
             elif op_name == "ln":
                 op = LayerNorm(norm_features, channel_last=self.channel_last)
+            elif op_name == "gn":
+                op = nn.GroupNorm(norm_groups, norm_features)
+            elif op_name == "tgn":
+                op = nn.GroupNorm(1, norm_features)
             elif op_name == "dropout":
                 if dropout_p == 0.0:
                     continue

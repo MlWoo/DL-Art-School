@@ -34,7 +34,7 @@ class OrthogonalEmbeddingLoss(nn.Module):
         return torch.mean(torch.clamp(torch.abs(sim), min=self.sim_eps))
 
 
-class RepresentationLearner(nn.Module):
+class DVAERepresentationLearner(nn.Module):
     """A basic representation learner.
 
     The data goes through:
@@ -75,7 +75,7 @@ class RepresentationLearner(nn.Module):
         ctc_loss_reduction: str = "mean",
         **kwargs,
     ):
-        super(RepresentationLearner, self).__init__()
+        super(DVAERepresentationLearner, self).__init__()
         self.in_channels = in_channels
         if isinstance(in_channels, (list, tuple)):
             assert (
@@ -578,13 +578,13 @@ def register_representation_learner(opt_net, opt):
 
 
 if __name__ == "__main__":
-    model = RepresentationLearner(
+    model = DVAERepresentationLearner(
         in_channels=80,
         rand_crop_len=256,
         codebook_dim=2048,
         vae_encoder_codebook=True,
         vae_encoder=dict(
-            class_name="modelaudio.module.encoders.LucidrainsEncoder",
+            class_name="model.audio.module.encoders.LucidrainsEncoder",
             num_layers=3,
             num_resnet_blocks=0,
             hidden_dim=64,
@@ -595,7 +595,7 @@ if __name__ == "__main__":
             positional_dims=1,
         ),
         res_encoder=dict(
-            class_name="modelaudio.module.encoders.ReferenceEncoderWang",
+            class_name="model.audio.module.encoders.ReferenceEncoderWang",
         ),
         bottleneck=dict(
             class_name="modelvqvae.vqvae.JukeboxQuantize",
@@ -609,7 +609,7 @@ if __name__ == "__main__":
             norm_type=None,
         ),
         reconstructor=dict(
-            class_name="modelaudio.module.encoders.LucidrainsDecoder",
+            class_name="model.audio.module.encoders.LucidrainsDecoder",
             num_layers=3,
             num_resnet_blocks=0,
             hidden_dim=256,
@@ -623,7 +623,7 @@ if __name__ == "__main__":
             g_noise_dim=0,
         ),
         global_extractor=dict(
-            class_name="modelaudio.module.encoders.SelfAttentionSpeakerEncoder",
+            class_name="model.audio.module.encoders.SelfAttentionSpeakerEncoder",
             num_layers=2,
             num_heads=4,
             pool_type="attn",
@@ -641,7 +641,7 @@ if __name__ == "__main__":
         codebook_dim=2048,
         vae_encoder_codebook=True,
         vae_encoder=dict(
-            class_name="modelaudio.module.encoders.LucidrainsEncoder",
+            class_name="model.audio.module.encoders.LucidrainsEncoder",
             num_layers=3,
             num_resnet_blocks=0,
             hidden_dim=64,
@@ -652,7 +652,7 @@ if __name__ == "__main__":
             positional_dims=1,
         ),
         res_encoder=dict(
-            class_name="modelaudio.module.encoders.ReferenceEncoderWang",
+            class_name="model.audio.module.encoders.ReferenceEncoderWang",
         ),
         bottleneck=dict(
             class_name="modelvqvae.vqvae.JukeboxQuantize",
@@ -666,7 +666,7 @@ if __name__ == "__main__":
             norm_type=None,
         ),
         reconstructor=dict(
-            class_name="modelaudio.module.encoders.LucidrainsDecoder",
+            class_name="model.audio.module.encoders.LucidrainsDecoder",
             num_layers=3,
             num_resnet_blocks=0,
             hidden_dim=256,
@@ -680,14 +680,14 @@ if __name__ == "__main__":
             g_noise_dim=0,
         ),
         global_extractor=dict(
-            class_name="modelaudio.module.encoders.SelfAttentionSpeakerEncoder",
+            class_name="model.audio.module.encoders.SelfAttentionSpeakerEncoder",
             num_layers=2,
             num_heads=4,
             pool_type="attn",
             num_attn_in_dim=256,
         ),
         seperator=dict(
-            class_name="modelaudio.module.encoders.StackedResBlock",
+            class_name="model.audio.module.encoders.StackedResBlock",
             num_blocks=2,
             activation="relu",
             dropout_p=0.1,

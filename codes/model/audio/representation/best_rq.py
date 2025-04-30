@@ -198,6 +198,14 @@ class BestRqFramework(BaseModule):
 
         return input_values, target_values, time_mask_indices
 
+    def cal_mel_feats(self, input_values: Tensor, input_lengths: Tensor = None):
+        """
+        Args:
+            input_values (Tensor): with shape `(B, T, D)`
+            input_lengths (Tensor): with shape `(B)`
+        """
+        pass
+
     def forward(self, input_values: Tensor, input_lengths: Tensor = None):
         """
         Args:

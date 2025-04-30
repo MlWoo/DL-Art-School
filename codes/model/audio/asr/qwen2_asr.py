@@ -226,7 +226,7 @@ class ASRModel(BaseModule):
             stride = self.stride
             reduction_factor = self.encoder.reduction_factors
             speech_embeds = self.projector(speech_embeds)
-            speech_mask = sequence_mask(speech_lengths // reduction_factor // stride, max_len=speech_embeds.shape[1])
+            # speech_mask = sequence_mask(speech_lengths // reduction_factor // stride, max_len=speech_embeds.shape[1])
         else:
             speech_tokens = speech
             speech_mask = speech_tokens < self.codebook_size
@@ -241,6 +241,8 @@ class ASRModel(BaseModule):
             speech_embeds = self.projector(speech_embeds * speech_mask.unsqueeze(-1)) * speech_mask.unsqueeze(-1)
         input_speech_mask = input_ids == self.audio_token_id
         text_embeds = self.llm.get_input_embeddings()(input_ids)
+        speech_lengths_new = input_speech_mask.sum(-1)
+        speech_mask = sequence_mask(speech_lengths_new, max_len=speech_embeds.shape[1])
         text_embeds[input_speech_mask] = speech_embeds[speech_mask]
         return text_embeds, speech_embeds, input_speech_mask, speech_mask
 

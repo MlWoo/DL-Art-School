@@ -439,7 +439,7 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
         file_indice = []
         for index in indice:
             file_indice.append(self.files[index])
-        return file_indice
+        return file_indice, None
 
 
 @DATASETS.register_module()
