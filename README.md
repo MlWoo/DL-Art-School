@@ -11,7 +11,7 @@ The repository is used to train the audio model and much more clean and organize
 - [x] Support huggingface dataset. (support-only)
 - [x] Support audio-text huggingface dataset(ASR, TTS, etc.).
 - [x] Support audio-only sample-level huggingface dataset(for SSL, like Best-RQ).
-- [ ] Support audio-only segment-level huggingface dataset(for audio reconstruction, like vocoder, vq-vae, etc.).
+- [x] Support audio-only segment-level huggingface dataset(for audio reconstruction, like vocoder, vq-vae, etc.).
 - [ ] Support audio-text DPO dataset(for DPO, like Cosyvoice2).
 
 ### Training acceleration
@@ -55,6 +55,7 @@ The repository is used to train the audio model and much more clean and organize
 - [x] Support log images.
 - [x] Support attention visualization.
 - [x] Save checkpoint asynchronously.
+- [x] Support Mean-Variance Statistic online(for Best-RQ).
 - [ ] Support Top-K checkpoint saving.
 
 
