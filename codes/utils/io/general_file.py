@@ -89,7 +89,9 @@ def np_save(path, arr, **kwargs):
         np.save(f, arr, **kwargs)
 
 
-def torch_load(path, map_location=torch.device("cpu"), default_restore_dir=None, endswith=(".pth.tar", ".pth")):
+def torch_load(
+    path, map_location=torch.device("cpu"), default_restore_dir=None, endswith=(".pth.tar", ".pth"), weights_only=True
+):
     restore = path if path != "" and path is not None else default_restore_dir
     if not isinstance(endswith, (tuple, list)):
         endswith = [endswith]
@@ -119,21 +121,18 @@ def torch_load(path, map_location=torch.device("cpu"), default_restore_dir=None,
 
     with GFile(restore, "rb") as f:
         vio = io.BytesIO(f.read())
-        checkpoint = _torch_load(vio, map_location=map_location, weights_only=True)
+        checkpoint = _torch_load(vio, map_location=map_location, weights_only=weights_only)
         vio.close()
     return checkpoint
 
 
 def torch_save(dicts, checkpoint_path, async_file=False):
-    if async_file:
-        with PathManager.opena(f"{checkpoint_path}", "wb") as f:
-            vio = io.BytesIO()
-            _torch_save(dicts, vio)
-            f.write(vio.getvalue())
-            vio.close()
-    else:
-        with GFile(f"{checkpoint_path}", "wb") as f:
-            vio = io.BytesIO()
-            _torch_save(dicts, vio)
-            f.write(vio.getvalue())
-            vio.close()
+    # if async_file:
+    #     fh = PathManager.opena(f"{checkpoint_path}", "wb")
+    #     _torch_save(dicts, fh)
+    # else:
+    with GFile(f"{checkpoint_path}", "wb") as f:
+        vio = io.BytesIO()
+        _torch_save(dicts, vio)
+        f.write(vio.getvalue())
+        vio.close()

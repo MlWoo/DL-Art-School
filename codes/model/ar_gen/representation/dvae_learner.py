@@ -55,7 +55,7 @@ class DVAERepresentationLearner(nn.Module):
         res_encoder=None,
         bottleneck=dict(),
         reconstructor=dict(),
-        asr_head=dict(),
+        asr_head=None,
         global_extractor=None,
         global_extractor_crop_len=50,
         seperator=None,
@@ -573,8 +573,8 @@ class DVAERepresentationLearner(nn.Module):
 
 
 @register_model
-def register_representation_learner(opt_net, opt):
-    return RepresentationLearner(**opt_get(opt_net, ["kwargs"], {}))
+def register_dvae_representation_learner(opt_net, opt):
+    return DVAERepresentationLearner(**opt_get(opt_net, ["kwargs"], {}))
 
 
 if __name__ == "__main__":

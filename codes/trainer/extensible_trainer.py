@@ -70,6 +70,9 @@ class ExtensibleTrainer(BaseTrainer):
             if "trainable" not in net.keys():
                 net["trainable"] = True
 
+            if "save_freeze" not in net.keys():
+                net["save_freeze"] = True
+
             if name in cached_networks.keys():
                 new_net = cached_networks[name]
             else:
@@ -87,6 +90,7 @@ class ExtensibleTrainer(BaseTrainer):
 
             if not net["trainable"]:
                 new_net.eval()
+
             if net["wandb_debug"] and self.rank <= 0:
                 import wandb
 
@@ -498,9 +502,12 @@ class ExtensibleTrainer(BaseTrainer):
                                 rdbgv.float(), os.path.join(sample_save_path, v, "%05i_%02i_%02i.png" % (it, rvi, i))
                             )
                     else:
+                        if len(dbgv.shape) == 3:
+                            dbgv = dbgv.unsqueeze(dim=1)
                         dbgv = fix_image(dbgv)
                         os.makedirs(os.path.join(sample_save_path, v), exist_ok=True)
                         utils.save_image(dbgv.float(), os.path.join(sample_save_path, v, "%05i_%02i.png" % (it, i)))
+
             # Some models have their own specific visual debug routines.
             for net_name, net in self.networks.items():
                 if hasattr(net.module, "visual_dbg"):
@@ -703,9 +710,11 @@ class ExtensibleTrainer(BaseTrainer):
         for name, net in self.networks.items():
             # Don't save non-trainable networks.
             if self.opt["networks"][name]["trainable"]:
-                self.save_network(net, name, iter_step)
+                self.save_network(net, name, iter_step, save_freeze=self.opt["networks"][name]["save_freeze"])
                 if self.do_emas:
-                    self.save_network(self.emas[name], f"{name}_ema", iter_step)
+                    self.save_network(
+                        self.emas[name], f"{name}_ema", iter_step, save_freeze=self.opt["networks"][name]["save_freeze"]
+                    )
 
     def force_restore_swapout(self):
         # Legacy method. Do nothing.

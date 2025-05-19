@@ -108,7 +108,7 @@ class ConfigurableStep(Module):
             all_param_names = set()
             param_map = {}
             for mn, m in net.named_modules():
-                for k, v in m.named_parameters():
+                for k, v in m.named_parameters(recurse=False):
                     v.is_bias = k.endswith(".bias")
                     v.is_weight = k.endswith(".weight")
                     v.is_norm = isinstance(m, norm_modules)
@@ -368,6 +368,8 @@ class ConfigurableStep(Module):
                     ooms += 1
                 else:
                     raise e
+            except KeyboardInterrupt:
+                raise KeyboardInterrupt
             is_oom = self.check_oom(training_net, ooms, ooms_info, step, training_name)
             if is_oom:
                 return is_oom, None
@@ -445,6 +447,8 @@ class ConfigurableStep(Module):
                                 ooms += 1
                             else:
                                 raise e
+                        except KeyboardInterrupt:
+                            raise KeyboardInterrupt
                         is_oom = self.check_oom(training_net, ooms, ooms_info, step, training_name)  # DDP hangs
                         if is_oom:
                             return is_oom, None
@@ -458,6 +462,8 @@ class ConfigurableStep(Module):
                             ooms += 1
                         else:
                             raise e
+                    except KeyboardInterrupt:
+                        raise KeyboardInterrupt
                     is_oom = self.check_oom(training_net, ooms, ooms_info, step, training_name)  # DDP hangs
                     if is_oom:
                         return is_oom, None

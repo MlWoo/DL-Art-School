@@ -269,7 +269,7 @@ class MultiHeadAttn(nn.Module):
         self.channel_last = channel_last
         self.reset_parameters()
         self.score_mask_value = float("-inf")
-        self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
+        self.sdpa = hasattr(torch.nn.functional, "scaled_dot_product_attention")
 
     def reset_parameters(self):
         bound = 1.0 / math.sqrt(self.n_state)
@@ -482,7 +482,7 @@ class MultiHeadAttn(nn.Module):
     def forward(
         self, x, enc_kv=None, score_mask=None, outter_score_mask=None, sample=False, num_attn: int = 0, pos_info=None
     ):
-        if self.flash:
+        if self.sdpa:
             _, query, key, value, sample = self.get_qkv(x, enc_kv=enc_kv, sample=sample, pos_info=pos_info)
             score_mask = self.get_mask(
                 x.device,

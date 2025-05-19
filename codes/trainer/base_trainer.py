@@ -86,15 +86,29 @@ class BaseTrainer:
             network = network.module
         return str(network), sum(map(lambda x: x.numel(), network.parameters()))
 
-    def save_network(self, network, network_label, iter_label):
+    def save_network(self, network, network_label, iter_label, save_freeze=True):
         save_filename = "{}_{}.pth".format(iter_label, network_label)
         save_path = os.path.join(self.opt["path"]["models"], save_filename)
         if isinstance(network, nn.DataParallel) or isinstance(network, DistributedDataParallel):
             network = network.module
-        state_dict = network.state_dict()
-        for key, param in state_dict.items():
-            state_dict[key] = param.cpu()
+
+        def is_trainable(param_name):
+            key_chain = param_name.split(".")
+            param = network
+            for key in key_chain:
+                param = getattr(param, key)
+            if param.requires_grad and param.grad is not None:
+                return True
+            else:
+                return False
+
+        raw_state_dict = network.state_dict()
+        state_dict = {}
+        for key, param in raw_state_dict.items():
+            if is_trainable(key) or save_freeze:
+                state_dict[key] = param.cpu()
         torch_save(state_dict, save_path, async_file=True)
+
         if network_label not in self.save_history.keys():
             self.save_history[network_label] = []
         self.save_history[network_label].append(save_path)
@@ -138,9 +152,13 @@ class BaseTrainer:
         current_model_dict = network.state_dict()
 
         new_state_dict = {}
-        for k, v in zip(current_model_dict.keys(), load_net_clean.values()):
-            if v.size() == current_model_dict[k].size():
-                new_state_dict[k] = v
+        for k, v in zip(current_model_dict.keys(), current_model_dict.values()):
+            if k in load_net_clean:
+                if v.size() == load_net_clean[k].size():
+                    new_state_dict[k] = load_net_clean[k]
+                else:
+                    self.logger.info(f"Skipping {k} because size mismatch: {v.size()} != {load_net_clean[k].size()}")
+                    new_state_dict[k] = current_model_dict[k]
             else:
                 new_state_dict[k] = current_model_dict[k]
 

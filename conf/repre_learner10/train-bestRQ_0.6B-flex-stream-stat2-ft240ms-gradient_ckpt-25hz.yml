@@ -1,0 +1,380 @@
+# the model aims to use 64Hz code rate.
+name: &name streamconformer-bestrq_gelu-causal-sub1-stat-ft240ms-v2-aggressive-gigaspeech+librilight+peoples_speech_dirty_train-25hz
+model: extensibletrainer
+scale: 1
+gpu_ids: [0,1,2,3]
+start_step: -1
+checkpointing_enabled: false  # <-- Gradient checkpointing. Enable for huge GPU memory savings. Disable for distributed training.
+grad_scaler_enabled: false
+fp16: &fp16 true # TODO: why does enabling this with 8bit slow down perf??
+half_type : &half_type bf16
+use_8bit: false
+wandb: true  # <-- enable to log to wandb. tensorboard logging is always enabled.
+wandb_project_name: *name
+wandb_run_name: first_trial
+cuda_benchmarking_enabled: false
+use_tb_logger: true
+csv: false
+ddp_find_unused_parameters: true
+dist_backend: ddp
+
+manual_seed: &manual_seed 37102
+mel_bins: &mel_bins 128
+
+online_stat:
+  enabled: false
+  stat_batches: &stat_batches 10001
+  save_dir: &save_dir /home/wumenglin/cache/peoples_speech/dirty/
+  stat_cfg:
+    type: MeanVarianceOnlineStats
+    feature_dim: 1
+    n_dim: *mel_bins
+    data_key: &stat_key mel
+    data_length_key: mel_lengths
+
+audio_process: &audio_process
+  sampling_rate: &sr 16000
+  mel: &mel_cfg
+    mel_fmin: 0
+    mel_fmax: 8000
+    sampling_rate: *sr
+    n_mel_channels: *mel_bins
+    filter_length: 400
+    hop_length: 160
+    win_length: 400
+    true_normalization: false
+    mel_norm_file: !join [*save_dir, "/", *stat_key, "_stat_", *stat_batches, ".pt"]
+
+qwen2_pretrained_path: &qwen2_pretrained_path
+  "qwen/Qwen2.5-1.5B-Instruct"
+
+text_type: &text_type 0
+speech_type: &speech_type 1
+asr_text_type: &asr_text_type 2
+feature_size: &feature_size 128
+
+apply_compile: true
+search_batch_size_for_bucket: true
+search_batch_size_for_bucket_max_memory_fraction: 0.8
+
+dataloaders:
+  train:
+    # data loader background
+    buffer_background: true
+    buffer_background_size: 8
+    process_background: true
+    process_device: -1
+    n_workers: 12
+    pin_memory: true
+
+    dataset:
+      phase: train
+      name: peoples_speech+librilight+librispeech+gigaspeech
+      seed: *manual_seed
+      datasets_list:
+        - name: GigaSpeech
+          mode: HuggingfaceMinmoASRDataset
+          store_type: parquet #json
+          data_file:
+            - /data0/.cache/huggingface/hub/datasets--fixie-ai--gigaspeech/snapshots/dfb1732a2620bb664877f78c1575a85fd201f855/xl-empty-audio-removed/train/*/*.parquet
+          read_keys:
+            - text
+            - text_token
+            - audio
+          rm_punc: true
+          cache_dir: /home/wumenglin/.cache/cache/parquet/datasets--fixie-ai--gigaspeech/
+          tokenizers:
+            text: *qwen2_pretrained_path
+          file_path_key: id
+          cache_text: true
+          text_hint_id: 6562
+          audio_eos_id: 6563
+          text_inter_len: 5
+          audio_inter_len: 15
+          ignore_id: -100
+          text_type: *text_type
+          speech_type: *speech_type
+          asr_text_type: *asr_text_type
+        - name: peoples_speech_dirty_train
+          mode: HuggingfaceAudioDataset
+          store_type: parquet #json
+          data_file:
+            - /data0/shoppal/wumenglin/data/hf/librilight-webdataset/*.parquet
+          read_keys: 
+            - 'audio'
+            - 'audio_lengths'
+          cache_dir: /home/wumenglin/.cache/hf/librilight-webdataset
+        - name: peoples_speech_dirty_train-real
+          mode: HuggingfaceAudioDataset
+          store_type: parquet #json
+          data_file: /home/wumenglin/repo-dev/dl-art-school/codes/scripts/peoples_speech/dirty/train*
+          read_keys: 
+            - 'audio'
+            - 'audio_lengths'
+          cache_dir: /home/wumenglin/cache/peoples_speech/dirty
+      min_duration: 0.3
+      max_duration: -1
+      sample_duration: 40
+      cache_text: false
+      cache_audio: mel
+      read_keys: ['audio', 'audio_lengths']
+      shrink: true
+      sorted: false
+      carry_filename: false
+
+    sampler:
+      batch_size: 4
+      buffer_batch_group: 2
+      bucket_batch_volume: 32
+      similar_type: sample_frame_length
+      last_samples: 'drop'
+      shuffle: true
+      limited_length_type: sample_frame_length
+      length_range: [0, -1]
+      copies: 1
+      persistent_workers: True
+      pad_to_samples: 200
+      batch_mode: bucketed
+      num_buckets: 16
+      ## dynamical data sampler
+      max_tokens: 54000 # 15 * 768 ^ 1.2 # 34802, 43503 120000/a100
+      acc_coeffs: ((1.0, 1.0))
+      max_samples: 512
+
+      ## bucketed data sampler
+      bucket_max_batch_tokens: 16384
+      bucket_min_samples: 1
+      bucket_max_samples: 3000
+      # bucket_boundaries_batch_size_map: null
+
+    collator:
+      mode: MelsInferCollator
+      apply_half: *fp16
+      half_type: *half_type
+
+      spec_fn: 'canonical'
+      audio_process: *audio_process
+      pad_mode: trim
+      data_cfg:
+        file_names: null
+        audio_lengths: null
+        audio:
+          padding_val: -0.0
+
+  val:
+    # data loader background
+    buffer_background: true
+    buffer_background_size: 2
+    process_background: true
+    process_device: -1
+    n_workers: 12
+    pin_memory: true
+
+    dataset:
+      phase: val
+      name: peoples_speech_dirty_val
+      mode: HuggingfaceAudioDataset
+      store_type:  parquet #json
+      data_file: /home/wumenglin/repo-dev/dl-art-school/codes/scripts/peoples_speech/dirty/val*
+      cache_dir: /home/wumenglin/cache/peoples_speech/dirty
+      min_duration: 0.3
+      max_duration: -1
+      sample_duration: 40
+      seed: *manual_seed
+      cache_text: false
+      cache_audio: mel
+      phases_ratios: [0.999]
+      read_keys: ['audio', 'audio_lengths']
+      shrink: true
+      sorted: true
+      carry_filename: false
+
+    sampler:
+      batch_size: 32
+      buffer_batch_group: 2
+      bucket_batch_volume: 32
+      similar_type: sample_frame_length
+      last_samples: 'drop'
+      shuffle: true
+      limited_length_type: sample_frame_length
+      length_range: [0, -1]
+      copies: 1
+      persistent_workers: True
+      pad_to_samples: 200
+      batch_mode: bucketed
+      num_buckets: 16
+      ## dynamical data sampler
+      max_tokens: 54000 # 15 * 768 ^ 1.2 # 34802, 43503 120000/a100
+      acc_coeffs: ((1.0, 1.0))
+      max_samples: 512
+      ## bucketed data sampler
+      bucket_max_batch_tokens: 16384
+      bucket_min_samples: 1
+      bucket_max_samples: 256
+
+    collator:
+      mode: MelsInferCollator
+      apply_half: *fp16
+      half_type: *half_type
+
+      spec_fn: 'canonical'
+      audio_process: *audio_process
+      pad_mode: trim
+      data_cfg:
+        file_names: null
+        audio_lengths: null
+        audio:
+          padding_val: -0.0
+
+num_model_dim: &num_model_dim 1024
+
+networks:
+  generator:
+    type: generator
+    which_model_G: best_rq
+    kwargs:
+      input_dim: *mel_bins
+      num_codebooks: 16
+      codebook_size: 8192
+      codebook_dim: 16
+      mask_time: 300
+      mask_prob: 0.04
+      encoder:
+        class_name: model.audio.module.bestrq_flex.BestRqConformerEncoder
+        input_dim: *mel_bins
+        input_channels: 1
+        num_attention_heads: 8
+        hidden_size: *num_model_dim
+        ffn_dim: 4096
+        num_hidden_layers: 24
+        conv_depthwise_kernel_size: 4
+        feat_proj_dropout: 0.
+        activation_dropout: 0.
+        hidden_dropout: 0.
+        max_source_positions: 3000
+        no_scale_embedding: false
+        hidden_act: "swish"
+        conformer_conv_dropout: 0.
+        position_embeddings_type: relative
+        attention_dropout: 0.
+        rotary_embedding_base: 10000
+        layerdrop: 0.
+        final_dropout: 0.
+        num_preconformer_layers: 0
+        num_preconformer_heads: 4
+        preconformer_hidden_size: 384
+        preconformer_ffn_dim: 1536
+        preconformer_input_feature_projection: false
+        causal: true
+        sub_layers: 2
+        conv_hidden_size: [8, 32]
+        compile: true
+        window_size: 256
+        stream_chunk_size: null #160ms
+        lookforward_size: 6 # 240ms  240 / 10 / 2 = 12
+        gradient_checkpointing: true
+
+exp_dir: &exp_dir
+  !join [../experiments/, *name]
+
+
+path:
+  #pretrain_model_generator: ../experiments/dvae_2048_32bin_50hz/models/70000_generator.pth
+  strict_load: false
+  resume_state: !join [*exp_dir, /training_state/]    # <-- Set this to resume from a previous training state.
+  #pretrain_model_generator: !join [*exp_dir, /models-x/]
+
+oom:
+  raise_error: false
+  oom_trials: 2
+
+steps:
+  generator:
+    training: generator
+    clip_grad_eps: 1.0
+    check_abnorm_grads: true
+    optimizer_params:
+      lr: !!float 4e-3
+      weight_decay: 0.0001
+      beta1: 0.9
+      beta2: 0.99
+      eps: !!float 1e-08
+    injectors:
+      # Cool hack for more training diversity:
+      # Make sure to change below references to `hq` to `cropped`.
+      #random_crop:
+      #  train: true
+      #  type: random_crop
+      #  dim_in: 224
+      #  dim_out: 192
+      #  in: hq
+      #  out: cropped
+      gen_inj_train:
+        train: true
+        type: generator
+        generator: generator
+        in: [mel, mel_lengths]
+        out: [pred_labels, loss] #
+      gen_inj_eval:
+        train: false
+        type: generator
+        generator: generator
+        in: [mel, mel_lengths]
+        out: [pred_labels, loss] #
+    losses:
+      mlm:
+        type: direct
+        weight: 0.0625
+        key: loss
+
+train:
+  niter: 50000000
+  warmup_iter: 25000
+  mega_batch_factor: 1    # <-- Gradient accumulation factor. If you are running OOM, increase this to [2,4,8].
+  val_freq: 100000
+
+  default_lr_scheme: TransformerLR
+  num_model_dim: *num_model_dim
+  manual_seed: *manual_seed
+  ema_enabled: false
+
+eval:
+  pure: true
+  # output_state: loss
+  # injectors:
+  #   gen_inj_eval:
+  #     type: generator
+  #     generator: generator
+  #     in: [mel, mel_lengths]
+  #     out: [pred_labels, loss] #
+
+logger:
+  print_freq: 10
+  save_checkpoint_freq: 10000
+  visuals: [gen, tgt]
+  visual_debug_rate: 10000
+  visuals_batch_size: 16
+  is_mel_spectrogram: true
+  disable_state_saving: false
+
+
+upgrades:
+  # Variable: number_of_checkpoints_to_save
+  # Description: Define how many checkpoints should be saved on disk (1 checkpoint = pth+ =~ 6.8 GB)
+  # Type: integer
+  # Value: should be the same value as for number_of_states_to_save
+  # smaller than 1 - turn off this option; there is no max value. For Colab use 1 or 2.
+  # For Colab use 1 or 2 for gDrive and 5 for instance drive
+  # 1 == Leave last saved checkpoint + last saved state (about 6.8 GB).
+  # 2 == Leave last 2 saved checkpoints + last saved states (about 2 *~ 6.8 GB =~ 13.6 GB).
+  number_of_checkpoints_to_save: 5
+  # Variable: number_of_states_to_save
+  # Description: Define how many states should be saved on disk (1 state =~ 3.4 GB)
+  # if disable_state_saving is set as true this option will be inactive
+  # Type: integer
+  # Value: should be the same value as for number_of_checkpoints_to_save
+  # smaller than 1 - turn off this option; there is no max value.
+  # For Colab use 1 or 2 for gDrive and 5 for instance drive
+  # 1 == Leave last saved state (about 3.4 GB).
+  # 2 == Leave last 2 saved states (about 2 *~ 3.4 GB =~ 6.8 GB).
+  number_of_states_to_save: 5

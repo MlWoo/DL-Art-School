@@ -285,7 +285,7 @@ class HuggingfaceAudioClipDataset(AudioABCDataset):
         durations = dataset["duration"] if "duration" in dataset.features else dataset["duration_ms"] / 1000
         min_mask = durations > self.min_duration + (1.0 / self.sr)
 
-        if self.max_duration is None or self.aug_shift:
+        if self.max_duration is None or self.max_duration < 0 or self.aug_shift:
             mask = min_mask
         else:
             max_mask = durations < self.max_duration - (1.0 / self.sr)
@@ -297,6 +297,7 @@ class HuggingfaceAudioClipDataset(AudioABCDataset):
 
         durations_sample = (self.durations * self.sr).astype(np.int32)
         self.cumsum = np.cumsum(durations_sample)
+
         self.dataset_len = int(np.floor(self.cumsum[-1] / self.sample_length))  # len(dataset)
 
         self.phases_indice_dict = self.create_datasets(
@@ -310,6 +311,7 @@ class HuggingfaceAudioClipDataset(AudioABCDataset):
         self.sorted = True
         self.stand_dict = None
         self.carry_filename = False
+        self.info_dict = dict()
 
     def get_audio_chunk(self, indice, offsets=None):
         meta_list = self.dataset[indice]

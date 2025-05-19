@@ -1,12 +1,9 @@
 # AGPL: a notification must be added stating that changes have been made to that file.
 import importlib
-import logging
 import os
 import pkgutil
 import sys
 from inspect import getmembers, isfunction, signature
-
-logger = logging.getLogger("base")
 
 
 class RegisteredModelNameError(Exception):

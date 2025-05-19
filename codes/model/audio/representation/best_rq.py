@@ -103,59 +103,6 @@ class BestRqFramework(BaseModule):
         self.mask_prob = mask_prob
         self.chunkwise_size = chunkwise_size
 
-    def visual_cfg(self):
-        plot_cfg = dict(
-            input_values=dict(
-                tensor_keys=[
-                    "input_values",
-                ],
-                shapes_keys=[
-                    (
-                        "input_lengths",
-                        "dim_lengths",
-                    ),
-                ],
-                t_labels=["col"],
-                l_labels=["row"],
-                visual_methods=["show"],
-                color_info=[None],
-                align_direction="h",
-                width=4,
-                height=4,
-            ),
-            token_attn=dict(
-                tensor_keys=[
-                    "attn",
-                ],
-                shapes_keys=[
-                    ("reduced_lengths", "reduced_lengths"),
-                ],
-                t_labels=["head"],
-                l_labels=["layers"],
-                visual_methods=["show"],
-                color_info=[None],
-                align_direction="h",
-                width=4,
-                height=4,
-            ),
-            score_mask=dict(
-                tensor_keys=[
-                    "score_mask",
-                ],
-                shapes_keys=[
-                    ("reduced_lengths", "reduced_lengths"),
-                ],
-                t_labels=["head"],
-                l_labels=["layers"],
-                visual_methods=["show"],
-                color_info=[None],
-                align_direction="v",
-                width=4,
-                height=4,
-            ),
-        )
-        return plot_cfg
-
     def masking(self, input_values: Tensor, input_lengths: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """
         Args:
@@ -342,6 +289,59 @@ class BestRqFramework(BaseModule):
             logits_ids = torch.argmax(logits, 1)
 
         return labels, logits_ids
+
+    def visual_cfg(self):
+        plot_cfg = dict(
+            input_values=dict(
+                tensor_keys=[
+                    "input_values",
+                ],
+                shapes_keys=[
+                    (
+                        "input_lengths",
+                        "dim_lengths",
+                    ),
+                ],
+                t_labels=["col"],
+                l_labels=["row"],
+                visual_methods=["show"],
+                color_info=[None],
+                align_direction="h",
+                width=4,
+                height=4,
+            ),
+            token_attn=dict(
+                tensor_keys=[
+                    "attn",
+                ],
+                shapes_keys=[
+                    ("reduced_lengths", "reduced_lengths"),
+                ],
+                t_labels=["head"],
+                l_labels=["layers"],
+                visual_methods=["show"],
+                color_info=[None],
+                align_direction="h",
+                width=4,
+                height=4,
+            ),
+            score_mask=dict(
+                tensor_keys=[
+                    "score_mask",
+                ],
+                shapes_keys=[
+                    ("reduced_lengths", "reduced_lengths"),
+                ],
+                t_labels=["head"],
+                l_labels=["layers"],
+                visual_methods=["show"],
+                color_info=[None],
+                align_direction="v",
+                width=4,
+                height=4,
+            ),
+        )
+        return plot_cfg
 
 
 @register_model

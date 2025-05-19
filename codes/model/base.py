@@ -46,6 +46,9 @@ class BaseModule(nn.Module, ABC):
     def get_annotation(self, inputs_dict, indice):
         return None
 
+    def visual_cfg(self):
+        return None
+
     @torch.no_grad()
     def visual_dbg(self, it, model_vdbg_dir):
         num_split = 1

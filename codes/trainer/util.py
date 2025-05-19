@@ -19,13 +19,16 @@ def set_requires_grad(nets, requires_grad: bool = False, set_to_none: bool = Fal
                     if set_to_none:
                         p.grad = None
                         p.requires_grad = requires_grad
+                        p.DO_NOT_TRAIN = not requires_grad
                     else:
                         p.grad.zero_()
                         p.requires_grad = requires_grad
+                        p.DO_NOT_TRAIN = not requires_grad
                 else:
                     if set_to_none and requires_grad:
                         p.grad = torch.zeros_like(p)
                         p.requires_grad = requires_grad
+                        p.DO_NOT_TRAIN = not requires_grad
 
 
 def clip_grad_norm(parameters: list, parameter_names: list, max_norm: float, norm_type: float = 2.0) -> torch.Tensor:

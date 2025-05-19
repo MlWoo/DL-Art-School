@@ -3,11 +3,13 @@ import torch
 import torch.nn.functional as F
 from utils.distributed import apply_to_sample
 
+from data.builder import COLLATIONS
 from data.sampler.util import find_surrounding_elements
 
 Tensor = torch.Tensor
 
 
+@COLLATIONS.register_module()
 class Collator(object):
     def __init__(self, opt):
         data_cfg = opt.get("data_cfg", None)

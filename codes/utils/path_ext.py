@@ -8,7 +8,7 @@ import paramiko
 import scp
 
 from .io import mfs
-from .misc import get_timestamp
+from .logging_utils import get_timestamp
 from .xtype import is_str
 
 

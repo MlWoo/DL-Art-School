@@ -104,9 +104,12 @@ class ASRModel(BaseModule):
         self.llm = AutoModelForCausalLM.from_pretrained(pretrain_path, attn_implementation="flash_attention_2")
         self.llm.lm_head.weight = nn.Parameter(self.llm.lm_head.weight.clone())
         self.llm.to(torch.bfloat16)
+        set_requires_grad(self.llm, False, set_to_none=True)
         for param in self.llm.parameters():
             param.DO_NOT_TRAIN = True
             param.grad = None
+
+        self.llm.gradient_checkpointing_enable()
 
         tokenizer = AutoTokenizer.from_pretrained(pretrain_path)
         config = AutoConfig.from_pretrained(pretrain_path)
@@ -138,6 +141,7 @@ class ASRModel(BaseModule):
             self.codec = "whisper"
         elif speech_encoder_type == "conformer":
             assert encoder is not None, "encoder must be provided for conformer"
+            self.codec = "conformer"
             self.encoder = construct_from_kwargs(encoder)
             if encoder_pretrained is not None:
                 ckpt = torch.load(encoder_pretrained)
@@ -147,13 +151,16 @@ class ASRModel(BaseModule):
                     if k.startswith(prefix):
                         encoder_state_dict[k[len(prefix) :]] = v
                 self.encoder.load_state_dict(encoder_state_dict, strict=True)
-            self.codec = "conformer"
-            self.stride = 2
+            if encoder_layer_idx is not None:
+                for i, layer in enumerate(self.encoder.conformer.layers.layers):
+                    if i > encoder_layer_idx:
+                        self.encoder.conformer.layers.layers[i] = None
             self.encoder_layer_idx = encoder_layer_idx
+            self.stride = 2
             self.encoder_out_ln = nn.LayerNorm(encoder["num_model_dim"]) if enable_output_ln else nn.Identity()
             if encoder_freeze:
                 self.encoder.eval()
-                set_requires_grad(self.encoder, False, set_to_none=None)
+                set_requires_grad(self.encoder, False, set_to_none=True)
                 for p in self.encoder.parameters():
                     p.requires_grad = False
                     p.DO_NOT_TRAIN = True
@@ -217,6 +224,7 @@ class ASRModel(BaseModule):
                         speech.permute(0, 2, 1), speech_lengths, layer_idx=self.encoder_layer_idx
                     ).last_hidden_state
                     speech_embeds = self.encoder_out_ln(speech_embeds)
+                    speech_embeds = speech_embeds.detach()
             else:
                 speech_embeds = self.encoder(
                     speech.permute(0, 2, 1), speech_lengths, layer_idx=self.encoder_layer_idx
@@ -251,6 +259,8 @@ class ASRModel(BaseModule):
             inputs_embeds, speech_embeds, input_speech_mask, speech_mask = self.get_embeddings(
                 input_ids, speech[:, : self.feature_size], speech_lengths
             )
+            del speech
+            del speech_lengths
         else:
             inputs_embeds, speech_embeds, input_speech_mask, speech_mask = self.get_embeddings(input_ids, None, None)
         input_mask = input_type != self.asr_text_type + 1
@@ -260,6 +270,7 @@ class ASRModel(BaseModule):
         outputs = self.llm(inputs_embeds=inputs_embeds, input_mask=input_mask)
 
         logits = outputs.logits
+        del outputs
         logits = logits[output_mask]
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=False):

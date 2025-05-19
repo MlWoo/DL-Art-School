@@ -175,7 +175,7 @@ class CanonicalTorchMelSpectrogram(Injector):
 
     @torch.no_grad()
     def forward(self, state):
-        inp = state[self.input]
+        inp = state.pop(self.input)
         if (
             len(inp.shape) == 3
         ):  # Automatically squeeze out the channels dimension if it is present (assuming mono-audio)
@@ -196,7 +196,7 @@ class CanonicalTorchMelSpectrogram(Injector):
                     stddev = mel_norms["stddev"].to(mel.device)[:, None]
                 mel = (mel - mean) / stddev
 
-        return {"mel": mel, "out": mel}
+        return {"mel": mel, self.output: mel}
 
     def mel_spectrogram_torch(self, x):
         norm_volume = False

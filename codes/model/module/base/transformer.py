@@ -39,6 +39,7 @@ class AbcResAttnBlock(nn.Module, metaclass=ABCMeta):
         concat_after: bool = False,
         LN_learnable: bool = True,
         channel_last: bool = True,
+        layer_idx: int = 0,
     ):
         assert attn_size == attn.in_size
         super().__init__()
@@ -271,6 +272,7 @@ class ResAttnBlock(AbcResAttnBlock):
         concat_after: bool = False,
         causal: bool = False,
         padding_mode: str = "zeros",
+        layer_idx: int = 0,
     ):
         module_kwargs = super().get_kwargs(self.__init__, locals())
         super().__init__(**module_kwargs)
@@ -300,6 +302,7 @@ class AdaptLNResAttnBlock(AbcResAttnBlock):
         concat_after: bool = False,
         causal: bool = False,
         padding_mode: str = "zeros",
+        layer_idx: int = 0,
     ):
         module_kwargs = super().get_kwargs(self.__init__, locals())
         module_kwargs["LN_learnable"] = True
@@ -487,6 +490,7 @@ class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
                 concat_after=ffn_cat_after,
                 causal=causal,
                 padding_mode=padding_mode,
+                layer_idx=i,
             )
             self.layers.append(res_attn_block)
         if pre_LN and final_LN:

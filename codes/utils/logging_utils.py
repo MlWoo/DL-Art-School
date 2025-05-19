@@ -1,11 +1,14 @@
 import os
+from datetime import datetime
 
 import torch.distributed as dist
 from utils import logging
 
-from .misc import get_timestamp
-
 logger_initialized = {}
+
+
+def get_timestamp():
+    return datetime.now().strftime("%y%m%d-%H%M%S")
 
 
 def get_logger(name, log_file=None, log_level=logging.INFO):

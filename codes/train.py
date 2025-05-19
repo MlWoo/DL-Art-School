@@ -2,6 +2,7 @@ import argparse
 import math
 import os
 import shutil
+import signal
 from time import time
 
 import maybe_bnb
@@ -14,7 +15,8 @@ from trainer.eval.evaluator import create_evaluator
 from trainer.extensible_trainer import ExtensibleTrainer
 from utils import logging, logging_utils, options
 from utils.distributed import broadcast_object, init_dist, map_cuda_to_correct_device
-from utils.io import torch_load
+from utils.io import PathManager, torch_load
+from utils.misc import DelayedInterrupt
 from utils.options import opt_get
 
 from data import create_dataloader, create_dataset_collator
@@ -39,9 +41,13 @@ class Trainer:
             # distributed resuming: all load into default GPU
             try:
                 resume_state = torch_load(
-                    opt["path"]["resume_state"], map_location=map_cuda_to_correct_device, endswith=".state"
+                    opt["path"]["resume_state"],
+                    map_location=map_cuda_to_correct_device,
+                    endswith=".state",
+                    weights_only=False,
                 )
-            except:  # noqa: E722
+            except Exception as e:  # noqa: E722
+                print(f"Error loading resume state: {e}")
                 resume_state = None
         else:
             resume_state = None
@@ -760,4 +766,12 @@ if __name__ == "__main__":
         # torch.cuda.set_device(rank)
     trainer.init(args.opt, opt)
     trainer.online_stat()
-    trainer.do_training()
+    try:
+        trainer.do_training()
+    except KeyboardInterrupt:
+        logger = logging_utils.get_root_logger()
+        logger.info("KeyboardInterrupt or exception occurs. Waiting a moment ...")
+        with DelayedInterrupt([signal.SIGTERM, signal.SIGINT]):
+            PathManager.async_close()
+            os.kill(os.getpid(), signal.SIGINT)
+            os.kill(os.getpid(), signal.SIGTERM)

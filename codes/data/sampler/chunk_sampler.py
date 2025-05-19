@@ -475,7 +475,7 @@ class LengthChunkSampler:
                     ), "Any Partition operation should not change the selected data indices"
 
                 if self.last_samples == "drop":
-                    total_batch_num = (len(bucket_batches_indices) - 1) // self.num_replicas + 1
+                    total_batch_num = (len(bucket_batches_indices) // self.num_replicas) * self.num_replicas
                     bucket_batches_indices = bucket_batches_indices[:total_batch_num]
                 else:
                     total_batch_num = len(bucket_batches_indices)
@@ -519,7 +519,7 @@ class LengthChunkSampler:
         else:
             raise ValueError("The sampler are confused with bucket strategy")
 
-        if self.partition_record_path is not None and self.batch_mode == "dynamical":
+        if self.rank == 0 and self.partition_record_path is not None and self.batch_mode == "dynamical":
             os.makedirs(self.partition_record_path, exist_ok=True)
             torch.save(
                 ddp_bucket_batches_indices_list,
