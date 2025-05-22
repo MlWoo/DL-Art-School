@@ -83,7 +83,7 @@ dataloaders:
           store_type: parquet #json
           data_file:
             - /data0/shoppal/wumenglin/data/hf/librilight-webdataset/*.parquet
-          read_keys: 
+          read_keys:
             - 'audio'
             - 'audio_lengths'
           cache_dir: /home/wumenglin/.cache/hf/librilight-webdataset
@@ -92,7 +92,7 @@ dataloaders:
           mode: HuggingfaceAudioDataset
           store_type: parquet #json
           data_file: /home/wumenglin/repo-dev/dl-art-school/codes/scripts/peoples_speech/dirty/train*
-          read_keys: 
+          read_keys:
             - 'audio'
             - 'audio_lengths'
           cache_dir: /home/wumenglin/cache/peoples_speech/dirty
@@ -143,7 +143,7 @@ dataloaders:
           text_type: *text_type
           speech_type: *speech_type
           asr_text_type: *asr_text_type
-    
+
       min_duration: 0.3
       max_duration: -1
       sample_duration: 40

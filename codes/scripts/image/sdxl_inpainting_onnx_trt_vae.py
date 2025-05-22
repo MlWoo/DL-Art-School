@@ -1,14 +1,15 @@
 import os
-import torch
-import tensorrt as trt
+
 import numpy as np
-from diffusers import AutoencoderKL, StableDiffusionXLInpaintPipeline # For loading VAE
 import onnx
+import tensorrt as trt
+import torch
+from diffusers import AutoencoderKL, StableDiffusionXLInpaintPipeline  # For loading VAE
 
 # --- Configuration ---
 # Replace with your model ID (e.g., "stabilityai/stable-diffusion-xl-base-1.0" or your inpainting model ID)
 ORIGINAL_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
-OUTPUT_DIR = "./sdxl_vae_decoder_onnx_trt" # Directory to save exported files
+OUTPUT_DIR = "./sdxl_vae_decoder_onnx_trt"  # Directory to save exported files
 # Path for the initial ONNX export (might be >2GB)
 ONNX_VAE_DECODER_INITIAL_PATH = os.path.join(OUTPUT_DIR, "vae_decoder", "model_initial.onnx")
 # Path for the ONNX model with weights stored externally (this one is used for TRT)
@@ -17,13 +18,13 @@ FINAL_ONNX_VAE_DECODER_PATH = os.path.join(OUTPUT_DIR, "vae_decoder", "model_ext
 TRT_VAE_DECODER_PATH = os.path.join(OUTPUT_DIR, "vae_decoder", "model.plan")
 
 # VAE Decoder specific parameters (typical for SDXL)
-BATCH_SIZE = 1              # Default/Optimal batch size for TRT profile
-LATENT_CHANNELS = 4         # Number of channels in the latent space
-IMAGE_CHANNELS = 3          # Number of channels in the output image (RGB)
-IMAGE_HEIGHT = 512         # Target image height
-IMAGE_WIDTH = 512          # Target image width
-VAE_SCALE_FACTOR = 8        # VAE downscaling/upscaling factor (std for SDXL)
-TORCH_DTYPE = torch.float16 # Operate in FP16 for efficiency
+BATCH_SIZE = 1  # Default/Optimal batch size for TRT profile
+LATENT_CHANNELS = 4  # Number of channels in the latent space
+IMAGE_CHANNELS = 3  # Number of channels in the output image (RGB)
+IMAGE_HEIGHT = 512  # Target image height
+IMAGE_WIDTH = 512  # Target image width
+VAE_SCALE_FACTOR = 8  # VAE downscaling/upscaling factor (std for SDXL)
+TORCH_DTYPE = torch.float16  # Operate in FP16 for efficiency
 
 # Create output directories if they don't exist
 os.makedirs(os.path.join(OUTPUT_DIR, "vae_decoder"), exist_ok=True)
@@ -31,12 +32,14 @@ os.makedirs(os.path.join(OUTPUT_DIR, "vae_decoder"), exist_ok=True)
 # Initialize TensorRT logger
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
 
+
 # --- VAE Decoder Wrapper for ONNX Export ---
 class VAEDecoderONNXWrapper(torch.nn.Module):
     """
     Wrapper for AutoencoderKL's decode method to ensure it returns a single tensor
     suitable for ONNX export.
     """
+
     def __init__(self, vae_model: AutoencoderKL):
         super().__init__()
         self.vae_model = vae_model
@@ -48,7 +51,8 @@ class VAEDecoderONNXWrapper(torch.nn.Module):
         decoded_output = self.vae_model.decode(latents, return_dict=False)
         if isinstance(decoded_output, tuple):
             return decoded_output[0]  # The actual decoded image tensor
-        return decoded_output # Should be the tensor if not a tuple
+        return decoded_output  # Should be the tensor if not a tuple
+
 
 # --- Function to Export VAE Decoder to ONNX ---
 def export_vae_decoder_to_onnx(
@@ -59,7 +63,7 @@ def export_vae_decoder_to_onnx(
     latent_channels: int,
     latent_height: int,
     latent_width: int,
-    torch_dtype: torch.dtype = torch.float16
+    torch_dtype: torch.dtype = torch.float16,
 ) -> str | None:
     """
     Exports the VAE decoder part of the AutoencoderKL model to ONNX format.
@@ -79,24 +83,18 @@ def export_vae_decoder_to_onnx(
         Path to the final ONNX model with external data, or None on failure.
     """
     print(f"Starting VAE Decoder ONNX export to: {initial_onnx_export_path}")
-    vae_model.eval().to("cuda", dtype=torch_dtype) # Ensure eval mode and correct device/dtype
+    vae_model.eval().to("cuda", dtype=torch_dtype)  # Ensure eval mode and correct device/dtype
 
     # Wrap the VAE model's decode method
     wrapped_decoder = VAEDecoderONNXWrapper(vae_model).cuda().eval()
 
     # Create dummy input for the VAE Decoder
-    dummy_latents = torch.randn(
-        batch_size,
-        latent_channels,
-        latent_height,
-        latent_width,
-        dtype=torch_dtype
-    ).cuda()
+    dummy_latents = torch.randn(batch_size, latent_channels, latent_height, latent_width, dtype=torch_dtype).cuda()
     print(f"  Dummy latents shape for VAE Decoder export: {dummy_latents.shape}")
 
     # Define input and output names for the ONNX graph
     input_names = ["latent_sample"]  # Name for the latent input tensor
-    output_names = ["sample"]        # Name for the decoded image output tensor
+    output_names = ["sample"]  # Name for the decoded image output tensor
 
     # Define dynamic axes for inputs and outputs
     dynamic_axes = {
@@ -141,9 +139,9 @@ def export_vae_decoder_to_onnx(
             onnx_model_loaded,
             final_onnx_path_for_trt,
             save_as_external_data=True,
-            all_tensors_to_one_file=True, # Store all external tensors in one separate file
-            location=external_weights_filename, # Name of the file where weights will be stored
-            size_threshold=1024  # Tensors larger than 1KB will be stored externally
+            all_tensors_to_one_file=True,  # Store all external tensors in one separate file
+            location=external_weights_filename,  # Name of the file where weights will be stored
+            size_threshold=1024,  # Tensors larger than 1KB will be stored externally
         )
         print("  VAE Decoder ONNX model saved with external data successfully.")
         return final_onnx_path_for_trt
@@ -151,19 +149,27 @@ def export_vae_decoder_to_onnx(
     except Exception as e:
         print(f"ERROR during VAE Decoder ONNX export or external data conversion: {e}")
         import traceback
+
         traceback.print_exc()
         return None
+
 
 # --- Function to Convert ONNX VAE Decoder to TensorRT Engine ---
 def convert_vae_decoder_onnx_to_trt(
     onnx_path: str,
     trt_engine_path: str,
-    min_batch: int, opt_batch: int, max_batch: int,
-    min_latent_h: int, opt_latent_h: int, max_latent_h: int,
-    min_latent_w: int, opt_latent_w: int, max_latent_w: int,
+    min_batch: int,
+    opt_batch: int,
+    max_batch: int,
+    min_latent_h: int,
+    opt_latent_h: int,
+    max_latent_h: int,
+    min_latent_w: int,
+    opt_latent_w: int,
+    max_latent_w: int,
     latent_channels: int,
     fp16_mode: bool = True,
-    workspace_size_gb: int = 2 # VAE Decoder is generally smaller than UNet
+    workspace_size_gb: int = 2,  # VAE Decoder is generally smaller than UNet
 ) -> bool:
     """
     Converts an ONNX VAE Decoder model to a TensorRT engine.
@@ -186,7 +192,7 @@ def convert_vae_decoder_onnx_to_trt(
     config = builder.create_builder_config()
 
     # Set workspace size
-    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_size_gb * (1024 ** 3))
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_size_gb * (1024**3))
 
     # Enable FP16 mode if specified
     if fp16_mode:
@@ -216,13 +222,13 @@ def convert_vae_decoder_onnx_to_trt(
     # Define an optimization profile for dynamic input shapes
     profile = builder.create_optimization_profile()
     # The input name must match the name defined during ONNX export (e.g., "latent_sample")
-    latent_input_name = "latent_sample" # Should match input_names[0] from export
+    latent_input_name = "latent_sample"  # Should match input_names[0] from export
 
     profile.set_shape(
         latent_input_name,
         min=(min_batch, latent_channels, min_latent_h, min_latent_w),
         opt=(opt_batch, latent_channels, opt_latent_h, opt_latent_w),
-        max=(max_batch, latent_channels, max_latent_h, max_latent_w)
+        max=(max_batch, latent_channels, max_latent_h, max_latent_w),
     )
     config.add_optimization_profile(profile)
     print(f"  Optimization profile added for '{latent_input_name}':")
@@ -230,11 +236,10 @@ def convert_vae_decoder_onnx_to_trt(
     print(f"    Opt Shape: ({opt_batch}, {latent_channels}, {opt_latent_h}, {opt_latent_w})")
     print(f"    Max Shape: ({max_batch}, {latent_channels}, {max_latent_h}, {max_latent_w})")
 
-
     # Build the TensorRT engine
     print("  Building TensorRT VAE Decoder engine... This may take a few minutes.")
     # serialized_engine = builder.build_serialized_network(network, config) # Old API
-    plan = builder.build_serialized_network(network, config) # New API for TRT 8+
+    plan = builder.build_serialized_network(network, config)  # New API for TRT 8+
 
     if plan is None:
         print("ERROR: Failed to build the TensorRT VAE Decoder engine.")
@@ -248,6 +253,7 @@ def convert_vae_decoder_onnx_to_trt(
     print(f"TensorRT VAE Decoder engine saved to: {trt_engine_path}")
     return True
 
+
 # --- Main Execution Script ---
 if __name__ == "__main__":
     print("Starting VAE Decoder to ONNX and TensorRT conversion process...")
@@ -260,8 +266,8 @@ if __name__ == "__main__":
         vae = AutoencoderKL.from_pretrained(
             ORIGINAL_MODEL_ID,
             subfolder="vae",
-            torch_dtype=TORCH_DTYPE, # Load in target dtype for consistency
-            use_safetensors=True
+            torch_dtype=TORCH_DTYPE,  # Load in target dtype for consistency
+            use_safetensors=True,
         )
         print("VAE model loaded successfully directly.")
     except Exception as e:
@@ -278,7 +284,7 @@ if __name__ == "__main__":
                 # Load only essential components if possible, though VAE is usually core
             )
             vae = temp_pipeline.vae
-            del temp_pipeline # Free up memory from the rest of the pipeline
+            del temp_pipeline  # Free up memory from the rest of the pipeline
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             print("VAE extracted from full pipeline successfully.")
@@ -298,11 +304,11 @@ if __name__ == "__main__":
             vae_model=vae,
             initial_onnx_export_path=ONNX_VAE_DECODER_INITIAL_PATH,
             final_onnx_path_for_trt=FINAL_ONNX_VAE_DECODER_PATH,
-            batch_size=BATCH_SIZE, # Using the global BATCH_SIZE for dummy input
+            batch_size=BATCH_SIZE,  # Using the global BATCH_SIZE for dummy input
             latent_channels=LATENT_CHANNELS,
             latent_height=IMAGE_HEIGHT // VAE_SCALE_FACTOR,
             latent_width=IMAGE_WIDTH // VAE_SCALE_FACTOR,
-            torch_dtype=TORCH_DTYPE
+            torch_dtype=TORCH_DTYPE,
         )
         if not actual_final_onnx_path:
             print("ERROR: ONNX VAE Decoder export failed. Exiting.")
@@ -322,19 +328,19 @@ if __name__ == "__main__":
                 trt_engine_path=TRT_VAE_DECODER_PATH,
                 # Min/Opt/Max for Batch Size
                 min_batch=1,
-                opt_batch=BATCH_SIZE, # Optimal batch size from config
-                max_batch=max(1, BATCH_SIZE * 2), # Example: allow up to 2x optimal batch
+                opt_batch=BATCH_SIZE,  # Optimal batch size from config
+                max_batch=max(1, BATCH_SIZE * 2),  # Example: allow up to 2x optimal batch
                 # Min/Opt/Max for Latent Height (derived from image height)
-                min_latent_h=(IMAGE_HEIGHT // VAE_SCALE_FACTOR) // 2, # Example: allow half optimal height
+                min_latent_h=(IMAGE_HEIGHT // VAE_SCALE_FACTOR) // 2,  # Example: allow half optimal height
                 opt_latent_h=IMAGE_HEIGHT // VAE_SCALE_FACTOR,
                 max_latent_h=IMAGE_HEIGHT // VAE_SCALE_FACTOR,
                 # Min/Opt/Max for Latent Width (derived from image width)
-                min_latent_w=(IMAGE_WIDTH // VAE_SCALE_FACTOR) // 2, # Example: allow half optimal width
+                min_latent_w=(IMAGE_WIDTH // VAE_SCALE_FACTOR) // 2,  # Example: allow half optimal width
                 opt_latent_w=IMAGE_WIDTH // VAE_SCALE_FACTOR,
                 max_latent_w=IMAGE_WIDTH // VAE_SCALE_FACTOR,
                 latent_channels=LATENT_CHANNELS,
-                fp16_mode=True, # Enable FP16 for speed
-                workspace_size_gb=2 # VAE Decoder is typically smaller than UNet
+                fp16_mode=True,  # Enable FP16 for speed
+                workspace_size_gb=2,  # VAE Decoder is typically smaller than UNet
             )
             if not success:
                 print("ERROR: TensorRT VAE Decoder conversion failed. Exiting.")
@@ -342,8 +348,9 @@ if __name__ == "__main__":
         else:
             print(f"TensorRT VAE Decoder engine already exists, skipping conversion: {TRT_VAE_DECODER_PATH}")
     else:
-        print(f"ERROR: Cannot convert to TensorRT. Final ONNX VAE Decoder file not found at {actual_final_onnx_path or FINAL_ONNX_VAE_DECODER_PATH}.")
+        print(
+            f"ERROR: Cannot convert to TensorRT. Final ONNX VAE Decoder file not found at {actual_final_onnx_path or FINAL_ONNX_VAE_DECODER_PATH}."
+        )
         exit(1)
 
     print("VAE Decoder conversion script finished successfully.")
-

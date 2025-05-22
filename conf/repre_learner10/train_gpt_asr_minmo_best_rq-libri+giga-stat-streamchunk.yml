@@ -253,7 +253,7 @@ dataloaders:
 num_model_dim: &num_model_dim 1024
 networks:
   gpt:
-    type: generator 
+    type: generator
     which_model_G: qwen2_asr # none of the unified_voice*.py files actually match the tortoise inference code... 4 and 3 have "alignment_head" (wtf is that?), 2 lacks the types=1 parameter.
     save_freeze: false
     kwargs:
@@ -298,7 +298,7 @@ networks:
         window_size: 256
         stream_chunk_size: 12 #160ms
         #lookforward_size: 12 # 240ms  240 / 10 / 2 = 12
-    
+
       encoder_pretrained: /home/wumenglin/repo-dev/DL-Art-School-dev/experiments/streamconformer-bestrq_gelu-causal-sub1-stat-v1/models/690000_generator.pth
       encoder_freeze: true
       encoder_layer_idx: 12

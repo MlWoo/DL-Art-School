@@ -6,11 +6,10 @@ import time
 import numpy as np
 import psutil
 import torch
+from model.base.mask import sequence_mask
 from torch import Tensor, nn
 from torch.nn.functional import normalize
 from tqdm import tqdm
-
-from model.base.mask import sequence_mask
 from utils.utils import chunk
 
 
@@ -548,7 +547,7 @@ class KMeanReservoir(nn.Module):
 
         closest = None
         arranged_mask = torch.arange(self.n_clusters, device=device)[:, None]
-        np.save(osp.join(km_dir, f"km_iter_0.npy"), self.centroids.to(torch.float32).cpu().numpy())
+        np.save(osp.join(km_dir, "km_iter_0.npy"), self.centroids.to(torch.float32).cpu().numpy())
         for i in range(self.max_iter_epoch):
             iter_time = time.time()
             if self.minibatch is not None:

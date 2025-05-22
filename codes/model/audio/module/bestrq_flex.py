@@ -74,6 +74,7 @@ class Conv1dSubsampling(nn.Module):
         padding_mode: str = "zero",
         causal: bool = True,
         activation: str = "relu",
+        gradient_checkpointing: bool = False,
     ):
         super(Conv1dSubsampling, self).__init__()
         if isinstance(conv_hidden_size, (list, tuple)):
@@ -114,11 +115,15 @@ class Conv1dSubsampling(nn.Module):
                 ),
                 ACT2FN[activation](),
             )
+        self.gradient_checkpointing = gradient_checkpointing
 
     def forward(self, x):
         # x (B, C, T)
         x = x.permute(0, 2, 1)
-        x = self.layers(x)  # (B, T, C)
+        if self.gradient_checkpointing and not self.training:
+            x = torch.utils.checkpoint.checkpoint(self.layers.__call__, x)
+        else:
+            x = self.layers(x)  # (B, T, C)
         x = x.permute(0, 2, 1)
         return x
 
@@ -150,6 +155,7 @@ class Conv2dSubsampling(nn.Module):
         proj_dropout_p: float = 0.1,
         causal: bool = True,
         activation: str = "relu",
+        gradient_checkpointing: bool = False,
     ):
         super(Conv2dSubsampling, self).__init__()
         if not isinstance(conv_hidden_size, (list, tuple)):
@@ -197,21 +203,29 @@ class Conv2dSubsampling(nn.Module):
             self.linear_proj = nn.Linear(
                 conv_hidden_size[-1] * (((input_dim) // 2) // 2), hidden_size
             )  # project subsamples to d_model
-            self.reduction_factors = 4
+            self.reduction_factor = 4
         else:
             self.linear_proj = nn.Linear(
                 conv_hidden_size[-1] * ((input_dim) // 2), hidden_size
             )  # project subsamples to d_model
-            self.reduction_factors = 2
+            self.reduction_factor = 2
         self.proj_dropout = nn.Dropout(p=proj_dropout_p, inplace=True)
+        self.gradient_checkpointing = gradient_checkpointing
 
-    def forward(self, x):
+    def apply_forward(self, x):
         output = self.layers(x.unsqueeze(1))  # (batch_size, 1, time, d_input)
         batch_size, d_model, subsampled_time, subsampled_freq = output.size()
         x = output.permute(0, 2, 1, 3)
         x = x.contiguous().view(batch_size, subsampled_time, d_model * subsampled_freq)
         x = self.linear_proj(x)
         x = self.proj_dropout(x)
+        return x
+
+    def forward(self, x):
+        if self.gradient_checkpointing and not self.training:
+            x = torch.utils.checkpoint.checkpoint(self.apply_forward, x)
+        else:
+            x = self.apply_forward(x)
         return x
 
 
@@ -245,6 +259,7 @@ class BestRqConformerEncoder(nn.Module):
         cxt_dropout_p: float = 0.0,
         ffn_dropout_p: float = 0.0,
         pos_dropout_p: float = 0.0,
+        final_LN: bool = False,
         causal: bool = True,
         window_size: int = 64,
         in_attn_size: Optional[int] = None,
@@ -261,9 +276,10 @@ class BestRqConformerEncoder(nn.Module):
         rotary_embedding_base: int = 10000,  # unused
         position_embeddings_type: str = "relative",
         compile: bool = False,
+        gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
-        model_cls = TransformerCompile if compile else Transformer
+        model_cls = Transformer
         # compatible
         if position_embeddings_type == "relative":
             attn_type = "rpr"
@@ -279,7 +295,12 @@ class BestRqConformerEncoder(nn.Module):
             input_dim = in_attn_size
 
         attn_func_type = 1 if causal else 0
-        attn_func_type = attn_func_type if window_size is None else attn_func_type + 2
+        if window_size is None:
+            attn_func_type = attn_func_type
+        else:
+            if lookforward_size is not None and lookforward_size > 0:
+                attn_func_type = 0
+            attn_func_type = attn_func_type + 2
 
         conv_hidden_size = extend2tuple(conv_hidden_size, sub_layers)
         if num_preconformer_layers > 0:
@@ -310,6 +331,7 @@ class BestRqConformerEncoder(nn.Module):
                 proj_dropout_p=proj_dropout_p,
                 causal=causal,
                 activation=conv_hidden_act,
+                gradient_checkpointing=gradient_checkpointing,
             )
         elif sub_type == "1d":
             self.conv_subsample = Conv1dSubsampling(
@@ -321,13 +343,14 @@ class BestRqConformerEncoder(nn.Module):
                 padding_mode=padding_mode,
                 causal=causal,
                 activation=conv_hidden_act,
+                gradient_checkpointing=gradient_checkpointing,
             )
         else:
             raise ImportError(f"{sub_type} Subsampling Module")
         if sub_layers == 2:
-            self.reduction_factors = 4
+            self.reduction_factor = 4
         else:
-            self.reduction_factors = 2
+            self.reduction_factor = 2
 
         if num_preconformer_layers > 0:
             self.pre_conformer = model_cls(
@@ -346,6 +369,7 @@ class BestRqConformerEncoder(nn.Module):
                 ffn_dropout_p=ffn_dropout_p,
                 pos_dropout_p=pos_dropout_p,
                 pre_LN=True,
+                block_LN=True,
                 final_LN=False,
                 use_macaron=True,
                 conv_module_type="original",
@@ -354,10 +378,11 @@ class BestRqConformerEncoder(nn.Module):
                 padding_mode=padding_mode,
                 max_len=max_source_positions,
                 norm_groups=norm_groups,
-                stream_chunk_size=stream_chunk_size * self.reduction_factors if stream_chunk_size is not None else None,
-                window_size=window_size * self.reduction_factors if window_size is not None else None,
-                chunkwise_size=chunkwise_size * self.reduction_factors if chunkwise_size is not None else None,
-                lookforward_size=lookforward_size * self.reduction_factors if lookforward_size is not None else None,
+                stream_chunk_size=stream_chunk_size * self.reduction_factor if stream_chunk_size is not None else None,
+                window_size=window_size * self.reduction_factor if window_size is not None else None,
+                chunkwise_size=chunkwise_size * self.reduction_factor if chunkwise_size is not None else None,
+                lookforward_size=lookforward_size * self.reduction_factor if lookforward_size is not None else None,
+                gradient_checkpointing=gradient_checkpointing,
             )
         else:
             self.pre_conformer = None
@@ -367,7 +392,7 @@ class BestRqConformerEncoder(nn.Module):
         ffn_dim = default(ffn_dim, num_attn_in_dim * 4)
 
         if chunkwise_size is not None:
-            chunkwise_size = chunkwise_size // self.reduction_factors
+            chunkwise_size = chunkwise_size // self.reduction_factor
         self.chunkwise_size = chunkwise_size
 
         self.conformer = model_cls(
@@ -385,7 +410,8 @@ class BestRqConformerEncoder(nn.Module):
             cxt_dropout_p=cxt_dropout_p,
             ffn_dropout_p=ffn_dropout_p,
             pre_LN=True,
-            final_LN=True,
+            block_LN=True,
+            final_LN=final_LN,
             use_macaron=True,
             conv_module_type="original",
             conv_module_kernel_size=conv_module_kernel_size,
@@ -395,9 +421,10 @@ class BestRqConformerEncoder(nn.Module):
             chunkwise_size=chunkwise_size,
             stream_chunk_size=stream_chunk_size,
             window_size=window_size,
-            max_len=max_source_positions // self.reduction_factors,
+            max_len=max_source_positions // self.reduction_factor,
             norm_groups=norm_groups,
             lookforward_size=lookforward_size,
+            gradient_checkpointing=gradient_checkpointing,
         )
         if codebook_dim > 0:
             self.output_proj = nn.Linear(hidden_size, codebook_dim)
@@ -405,6 +432,7 @@ class BestRqConformerEncoder(nn.Module):
         else:
             self.output_proj = nn.Identity()
             self.output_dim = hidden_size
+
         self.channel_last = channel_last
         self.hidden_size = hidden_size
         self.compile = compile
@@ -413,13 +441,19 @@ class BestRqConformerEncoder(nn.Module):
     def apply_compile(self):
         if self.compile and not self.compiled:
             apply_compile_transformer(self.conv_subsample)
-            apply_compile_transformer(self.conformer)
+            apply_compile_transformer(self.conformer.layers)
             if self.pre_conformer is not None:
-                apply_compile_transformer(self.pre_conformer)
+                apply_compile_transformer(self.pre_conformer.layers)
             self.compiled = True
 
     def forward(
-        self, input_values, input_lengths=None, layer_idx: int = -1, num_attn: int = 0, out_score_mask: bool = False
+        self,
+        input_values,
+        input_lengths=None,
+        layer_idx: int = -1,
+        num_attn: int = 0,
+        out_score_mask: bool = False,
+        out_hidden_states: bool = False,
     ):
         if not self.channel_last:
             input_values = input_values.permute(0, 2, 1)
@@ -441,7 +475,7 @@ class BestRqConformerEncoder(nn.Module):
         if input_lengths is None:
             features_mask = None
         else:
-            features_lengths = input_lengths // self.reduction_factors
+            features_lengths = input_lengths // self.reduction_factor
             features_mask = sequence_mask(features_lengths, max_len=input_features.shape[1]).unsqueeze(-1)
             assert (
                 features_mask.shape[1] == input_features.shape[1]
@@ -453,8 +487,10 @@ class BestRqConformerEncoder(nn.Module):
             layer_idx=layer_idx,
             num_attn=num_attn,
             out_score_mask=out_score_mask,
+            out_hidden_states=out_hidden_states,
         )
         last_hidden_state = output_values[-1]
+
         if layer_idx == -1:
             last_hidden_state = self.output_proj(last_hidden_state)
         if not self.channel_last:

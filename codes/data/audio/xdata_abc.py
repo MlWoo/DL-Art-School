@@ -362,4 +362,4 @@ class AudioABCDataset(torch.utils.data.Dataset[T_co], metaclass=ABCMeta):
 
     def get_item(self, item):
         indice, offset = self.get_index_offset(item)
-        return self.get_audio_chunk(indice, offset)
+        return self.get_audio_chunk(indice, item, offset)

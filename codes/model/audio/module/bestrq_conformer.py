@@ -295,7 +295,7 @@ class ConformerInputFeatureProjection(nn.Module):
         # self.layer_norm = nn.LayerNorm(config.conv_dim[-1], eps=config.layer_norm_eps)
         self.projection = nn.Linear(subsample_embed_dim, config.hidden_size)
         self.dropout = nn.Dropout(config.feat_proj_dropout)
-        self.reduction_factors = 4
+        self.reduction_factor = 4
 
     def forward(self, hidden_states):
         """
@@ -789,7 +789,7 @@ class ConformerEncoder(nn.Module):
 
         self.layers = nn.ModuleList([ConformerEncoderLayer(config) for _ in range(config.num_hidden_layers)])
 
-        self.reduction_factors = self.input_projection.reduction_factors
+        self.reduction_factor = self.input_projection.reduction_factor
         self.output_dim = self.config.hidden_size
 
         self.gradient_checkpointing = False
@@ -884,7 +884,7 @@ class BestRqModel(PreTrainedModel):
             self.encoder = ConformerEncoder(config)
             self.pre_conformer = None
 
-        self.reduction_factors = self.encoder.reduction_factors
+        self.reduction_factor = self.encoder.reduction_factor
         self.output_dim = self.encoder.output_dim
         # Initialize weights and apply final processing
         self.post_init()

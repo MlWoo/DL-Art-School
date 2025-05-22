@@ -1,4 +1,5 @@
-name: &name minmo_asr_librispeech+gigaspeech_conformer_chunk240ms-v1-new-stat
+layer_idx: &layer_idx 11
+name: &name !join [minmo_asr_librispeech+gigaspeech_conformer_chunk240ms-25hz-look_forward-1010k-, *layer_idx, "-layers-folded_ffn-noise-12.5hz-7b-v3-medium"]
 model: extensibletrainer
 scale: 1
 gpu_ids: [0] # <-- unless you have multiple gpus, use this
@@ -13,12 +14,13 @@ cuda_benchmarking_enabled: true # no convs in the model
 raise_oom: true
 ddp_find_unused_parameters: true
 anomaly_detection: false
+ddp_static_graph: true
 
 exp_dir: &exp_dir
   !join [../experiments/, *name]
 
 qwen2_pretrained_path: &qwen2_pretrained_path
-  "qwen/Qwen2.5-1.5B-Instruct"
+  "qwen/Qwen2.5-7B-Instruct"
 
 
 text_type: &text_type 0
@@ -27,7 +29,7 @@ asr_text_type: &asr_text_type 2
 feature_size: &feature_size 128
 
 
-manual_seed: &manual_seed 42
+manual_seed: &manual_seed 37102
 mel_bins: &mel_bins 128
 
 online_stat:
@@ -61,8 +63,8 @@ dataloaders:
     buffer_background: true
     buffer_background_size: 2
     process_background: true
-    process_device: 0
-    n_workers: 8
+    process_device: -1
+    n_workers: 6
     pin_memory: true
 
     dataset:
@@ -79,7 +81,7 @@ dataloaders:
             - /home/wumenglin/data/librispeech-asr/librispeech_cuts_train-other-500.jsonl
           read_keys:
             - text
-            - text_token
+            # - text_token
             - source
           cache_dir: /home/wumenglin/.cache/cache/jsonl/librispeech_cuts_train/
         - name: GigaSpeech
@@ -89,16 +91,56 @@ dataloaders:
             - /data0/.cache/huggingface/hub/datasets--fixie-ai--gigaspeech/snapshots/dfb1732a2620bb664877f78c1575a85fd201f855/xl-empty-audio-removed/train/*/*.parquet
           read_keys:
             - text
-            - text_token
+            # - text_token
             - audio
           rm_punc: true
           cache_dir: /home/wumenglin/.cache/cache/parquet/datasets--fixie-ai--gigaspeech/
+        - name: peoples_speech_dirty_train
+          mode: HuggingfaceMinmoASRDataset
+          store_type: parquet #json
+          data_file: /home/wumenglin/repo-dev/dl-art-school/codes/scripts/peoples_speech/dirty/train*
+          read_keys:
+            - 'audio'
+            - 'audio_lengths'
+            - text
+            # - text_token
+          cache_dir: /home/wumenglin/cache/peoples_speech/dirty
+        - name: peoples_speech_dirty_sa_train
+          mode: HuggingfaceMinmoASRDataset
+          store_type: parquet #json
+          data_file: /home/wumenglin/repo-dev/dl-art-school/codes/scripts/peoples_speech/dirty_sa/train*
+          read_keys:
+            - 'audio'
+            - 'audio_lengths'
+            - text
+            # - text_token
+          cache_dir: /home/wumenglin/cache/peoples_speech/dirty_sa
+        - name: peoples_speech_clean_train
+          mode: HuggingfaceMinmoASRDataset
+          store_type: parquet #json
+          data_file: /home/wumenglin/repo-dev/dl-art-school/codes/scripts/peoples_speech/clean/train*
+          read_keys:
+            - 'audio'
+            - 'audio_lengths'
+            - text
+            # - text_token
+          cache_dir: /home/wumenglin/cache/peoples_speech/clean
+        - name: peoples_speech_clean_sa_train
+          mode: HuggingfaceMinmoASRDataset
+          store_type: parquet #json
+          data_file: /home/wumenglin/repo-dev/dl-art-school/codes/scripts/peoples_speech/clean_sa/train*
+          read_keys:
+            - 'audio'
+            - 'audio_lengths'
+            - text
+            # - text_token
+          cache_dir: /home/wumenglin/cache/peoples_speech/clean_sa
       min_duration: 0.3
       max_duration: 30
       sample_duration: 40
       file_path_key: id
-      cache_text: true
-
+      cache_text: false
+      token_frame_rate2: 12.5
       shrink: false
       sorted: false
       carry_filename: false
@@ -118,10 +160,10 @@ dataloaders:
       batch_size: 4
       buffer_batch_group: 2
       bucket_batch_volume: 32
-      similar_type: text_token_length
+      similar_type: speech_token_length
       last_samples: 'drop'
       shuffle: true
-      limited_length_type: text_token_length
+      limited_length_type: speech_token_length
       length_range: [0, -1]
       copies: 1
       persistent_workers: True
@@ -129,10 +171,10 @@ dataloaders:
       batch_mode: dynamical
       num_buckets: 16
       ## dynamical data sampler
-      max_tokens: 24_000_000_000 # 15 * 768 ^ 1.2 # 34802, 43503 120000/a100
+      max_tokens: 20_000_000_000 # 15 * 768 ^ 1.2 # 34802, 43503 120000/a100
       acc_coeffs: [[2.0, 480], [1.0, 1400000]]
       max_samples: 256
-      partition_record_path: /home/wumenglin/.cache/LibriSpeech+GigaSpeech/dynamic_partition_0
+      # partition_record_path: /home/wumenglin/.cache/LibriSpeech+GigaSpeech/dynamic_partition_g50_1d-speech-no-shuffle-noise
 
       ## bucketed data sampler
       bucket_max_batch_tokens: 16384
@@ -166,11 +208,11 @@ dataloaders:
     buffer_background_size: 2
     process_background: true
     process_device: 0
-    n_workers: 6
+    n_workers: 8
     pin_memory: true
 
     dataset:
-      phase: train
+      phase: val
       name: LibriSpeech
       seed: *manual_seed
       mode: HuggingfaceMinmoASRLhotseDataset
@@ -184,10 +226,11 @@ dataloaders:
       max_duration: 30
       sample_duration: 40
       file_path_key: id
-      cache_text: true
+      cache_text: false
+      token_frame_rate2: 12.5
       read_keys:
         - text
-        - text_token
+        # - text_token
         - source
       shrink: false
       sorted: false
@@ -208,10 +251,10 @@ dataloaders:
       batch_size: 24
       buffer_batch_group: 2
       bucket_batch_volume: 32
-      similar_type: text_token_length
+      similar_type: speech_token_length
       last_samples: 'drop'
       shuffle: true
-      limited_length_type: text_token_length
+      limited_length_type: speech_token_length
       length_range: [0, -1]
       copies: 1
       persistent_workers: True
@@ -262,7 +305,7 @@ networks:
       speech_type: *speech_type
       asr_text_type: *asr_text_type
       feature_size: *feature_size
-      projector_type: folded
+      projector_type: transformer_v2
       stream: true
       speech_encoder_type: conformer
       encoder:
@@ -272,7 +315,7 @@ networks:
         num_attention_heads: 8
         hidden_size: *num_model_dim
         ffn_dim: 4096
-        num_hidden_layers: 20
+        num_hidden_layers: 24
         conv_depthwise_kernel_size: 4
         feat_proj_dropout: 0.
         activation_dropout: 0.
@@ -286,22 +329,32 @@ networks:
         rotary_embedding_base: 10000
         layerdrop: 0.
         final_dropout: 0.
-        num_preconformer_layers: 3
+        num_preconformer_layers: 0
         num_preconformer_heads: 4
         preconformer_hidden_size: 384
         preconformer_ffn_dim: 1536
         preconformer_input_feature_projection: false
         causal: true
-        sub_layers: 1
-        conv_hidden_size: [8]
+        sub_layers: 2
+        conv_hidden_size: [8, 32]
         compile: false
         window_size: 256
-        stream_chunk_size: 12 #160ms
+        stream_chunk_size: null #160ms
+        lookforward_size: 6 # 240ms  240 / 10 / 2 = 12
+        final_LN: false
 
-      encoder_pretrained: /home/wumenglin/repo-dev/DL-Art-School-dev/experiments/streamconformer-bestrq_gelu-causal-sub1-stat-v1/models/100000_generator.pth
-      encoder_freeze: true
-      encoder_layer_idx: 12
+
+      encoder_pretrained: /home/wumenglin/repo-dev/DL-Art-School-dev/experiments/streamconformer-bestrq_gelu-causal-sub1-stat-ft240ms-v2-no-final-ln-fix-mask-25hz/models/1010000_generator.pth
+      encoder_freeze: false
+      encoder_layer_idx: [*layer_idx, 16]
+      encoder_freeze_end_layer_idx: -1
       enable_output_ln: false
+      use_lora: true
+      lora_alpha: 32
+      lora_dropout: 0.1
+      lora_r: 8
+      lora_bias: "none"
+      lora_modules: ["gate_proj", "up_proj", "down_proj"]
 
 steps:
   gpt_train:
@@ -312,13 +365,13 @@ steps:
     optimizer: adamw # this should be adamw_zero if you're using distributed training
     #optimizer: lion
     optimizer_params:
-      lr: !!float 1e-4 # CHANGEME: this was originally 1e-4; I reduced it to 1e-5 because it's fine-tuning, but **you should experiment with this value**
+      lr: !!float 5e-5 # CHANGEME: this was originally 1e-4; I reduced it to 1e-5 because it's fine-tuning, but **you should experiment with this value**
       #lr: !!float 2e-6 # USE LOWER LR for LION
       triton: false # ONLY RELEVANT FOR LION
-      weight_decay: !!float 1e-4
+      weight_decay: 0.01
       beta1: 0.9
-      beta2: 0.96
-    clip_grad_eps: 1.0
+      beta2: 0.99
+    clip_grad_eps: 4.0
 
     injectors:  # TODO: replace this entire sequence with the GptVoiceLatentInjector
       paired_fwd_text:
@@ -337,20 +390,25 @@ steps:
         key: ctc_loss
 
 path:
-  #pretrain_model_gpt: '../experiments/autoregressive.pth' # CHANGEME: copy this from tortoise cache
+  # pretrain_model_gpt: '../experiments/autoregressive.pth' # CHANGEME: copy this from tortoise cache
+  # strict_load: true
+  # resume_state: !join [*exp_dir, /training_state/]   # <-- Set this to resume from a previous training state.
+  pretrain_model_gpt: /home/wumenglin/repo-dev/DL-Art-School-dev/experiments/minmo_asr_librispeech+gigaspeech_conformer_chunk240ms-25hz-look_forward-1010k-11-layers-folded_ffn-noise-12.5hz-7b-v3/models/10000_gpt.pth  # CHANGEME: copy this from tortoise cache
   strict_load: true
   resume_state: !join [*exp_dir, /training_state/]   # <-- Set this to resume from a previous training state.
+  optimizer_reset: True
+  scheduler_reset: True
 
 # afaik all units here are measured in **steps** (i.e. one batch of batch_size is 1 unit)
 train: # CHANGEME: ALL OF THESE PARAMETERS SHOULD BE EXPERIMENTED WITH
-  niter: 40000
+  niter: 200000
   warmup: 2500
   warmup_iter: 2500
   mega_batch_factor: 1    # <-- Gradient accumulation factor. If you are running OOM, increase this to [2,4,8].
   val_freq: 5000 # TODO set this to epoch size * something
 
   default_lr_scheme: MultiStepLR
-  gen_lr_steps: [5000, 10000, 18000, 30000]
+  gen_lr_steps: [5000, 10000, 18000, 30000, 50000]
   lr_gamma: 0.5
   ema_enabled: false
   manual_seed: *manual_seed # add this if you want reproducibility

@@ -81,29 +81,32 @@ class BestRqFramework(BaseModule):
 
         self.codebook_size = codebook_size
 
-        self.reduction_factors = self.encoder.reduction_factors
+        self.reduction_factor = self.encoder.reduction_factor
         # features are only normalized but not projected!
 
         self.enable_input_norm = enable_input_norm
 
-        self.out_linears = nn.ModuleList()
         self.random_projection_quantizers = nn.ModuleList()
+        self.out_linears = nn.ModuleList()
         for _ in range(num_codebooks):
-            out_linear = nn.Linear(self.encoder.output_dim, codebook_size)
             rpq = RandomProjectionQuantizer(
                 input_feature_size=input_dim,
-                reduction_factors=self.reduction_factors,
+                reduction_factor=self.reduction_factor,
                 codebook_size=codebook_size,
                 codebook_dim=codebook_dim,
             )
-            self.out_linears.append(out_linear)
             self.random_projection_quantizers.append(rpq)
+            self.out_linears.append(nn.Linear(self.encoder.output_dim, codebook_size))
 
-        self.num_time_steps = int(mask_time // (stride_time * self.reduction_factors))
+        self.num_time_steps = int(mask_time // (stride_time * self.reduction_factor))
         self.mask_prob = mask_prob
         self.chunkwise_size = chunkwise_size
+        self.auto_batch = False
+        self.feature_dim = input_dim
 
-    def masking(self, input_values: Tensor, input_lengths: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    def masking(
+        self, input_values: Tensor, input_lengths: Tensor, auto_batch: bool = False
+    ) -> tuple[Tensor, Tensor, Tensor]:
         """
         Args:
             input_values (Tensor): with shape `(B, L, D)`
@@ -125,9 +128,15 @@ class BestRqFramework(BaseModule):
         for batch in range(batch_size):
             time_mask_idx_candidates = list(range(int(input_lengths[batch])))
             k = max(1, int((self.mask_prob * input_lengths[batch]).round()))
-            start_time_mask_idx_array = torch.tensor(
-                random.sample(time_mask_idx_candidates, k=k), device=input_values.device, dtype=torch.long
-            )
+            if auto_batch:
+                auto_interval = input_lengths[batch] // k
+                start_time_mask_idx_array = torch.arange(
+                    0, input_lengths[batch], auto_interval, device=input_values.device, dtype=torch.long
+                )
+            else:
+                start_time_mask_idx_array = torch.tensor(
+                    random.sample(time_mask_idx_candidates, k=k), device=input_values.device, dtype=torch.long
+                )
             for i in range(self.num_time_steps):
                 # mask的帧数
                 time_mask_indices[batch, start_time_mask_idx_array + i] = 1
@@ -166,8 +175,8 @@ class BestRqFramework(BaseModule):
             # [B, L, 80]
             batch_size, dim, num_steps = input_values.size()
 
-            if self.debug_info is not None and self.debug_info.get("will_visual", False) and self.num_visual_debug > 0:
-                log_num = min(16, batch_size)
+            if self.debug_info is not None and self.run_info.get("will_visual", False) and self.num_visual_debug > 0:
+                log_num = min(self.num_visual_debug, batch_size)
                 if log_num < 4:
                     self.debug_info["input_values"] = input_values.detach()[:1].reshape(1, 1, 1, dim, num_steps).cpu()
                     self.debug_info["input_lengths"] = input_lengths.detach()[:1].cpu()
@@ -194,21 +203,21 @@ class BestRqFramework(BaseModule):
 
             input_values = rearrange(input_values, "b c l -> b l c")
 
-            if not num_steps % self.reduction_factors == 0:
-                num_steps = (num_steps // self.reduction_factors) * self.reduction_factors
+            if not num_steps % self.reduction_factor == 0:
+                num_steps = (num_steps // self.reduction_factor) * self.reduction_factor
                 input_values = input_values[:, :num_steps]
 
             # [B, L//4 * 4, 128] => # [B, L//4, 512]
-            input_values = input_values.reshape(batch_size, -1, self.reduction_factors * dim)
+            input_values = input_values.reshape(batch_size, -1, self.reduction_factor * dim)
 
             if self.enable_input_norm:
                 input_values = F.normalize(input_values, p=2.0, dim=-1)
 
-            quantized_input_lengths = input_lengths // self.reduction_factors
-            recover_input_lengths = quantized_input_lengths * self.reduction_factors
+            quantized_input_lengths = input_lengths // self.reduction_factor
+            recover_input_lengths = quantized_input_lengths * self.reduction_factor
 
             masked_input_values, masked_target_values, time_mask_indices = self.masking(
-                input_values, quantized_input_lengths
+                input_values, quantized_input_lengths, self.auto_batch
             )
             # [B, L//4 * 4, 512]
             masked_input_values = masked_input_values.reshape(batch_size, num_steps, -1)
@@ -230,22 +239,25 @@ class BestRqFramework(BaseModule):
         if self.debug_info is not None:
             self.debug_info["input_size"] = input_values.shape[0] * input_values.shape[1]
             self.debug_info["input_length"] = input_values.shape[1]
-            if self.debug_info.get("will_visual", False):
-                self.debug_info["attn"] = safe_stack(encoder_out.attentions, dim=1)
-                self.debug_info["reduced_lengths"] = input_lengths.detach() // self.reduction_factors
-                self.debug_info["score_mask"] = safe_stack(encoder_out.score_mask, dim=1)
+            if self.run_info.get("will_visual", False):
+                self.debug_info["attn"] = safe_stack(encoder_out.attentions, dim=1).cpu()
+                self.debug_info["reduced_lengths"] = input_lengths.detach() // self.reduction_factor
+                self.debug_info["score_mask"] = safe_stack(encoder_out.score_mask, dim=1).cpu()
 
         last_hidden_state = encoder_out.last_hidden_state
         del encoder_out
-        targets = last_hidden_state[time_mask_indices].contiguous()
+        masked_hidden_state = last_hidden_state[time_mask_indices].contiguous()  # T2 * 1024
 
         losses = 0.0
         for out_linear, labels in zip(self.out_linears, labels_list):
-            pred_labels = out_linear(targets)
+            pred_labels = out_linear(masked_hidden_state)
             loss = F.cross_entropy(pred_labels, labels)
             losses = losses + loss
 
         return pred_labels, losses
+
+    def apply_auto_batch(self, auto_batch: bool = True):
+        self.auto_batch = auto_batch
 
     def apply_compile(self):
         self.encoder.apply_compile()
@@ -256,18 +268,18 @@ class BestRqFramework(BaseModule):
         # [B, L, 80]
         batch_size, num_steps, dim = input_values.size()
 
-        if not num_steps % self.reduction_factors == 0:
-            num_steps = (num_steps // self.reduction_factors) * self.reduction_factors
+        if not num_steps % self.reduction_factor == 0:
+            num_steps = (num_steps // self.reduction_factor) * self.reduction_factor
             input_values = input_values[:, :num_steps]
 
         # [B, L//4 * 4, 128] => # [B, L//4, 512]
-        input_values = input_values.reshape(batch_size, -1, self.reduction_factors * dim)
+        input_values = input_values.reshape(batch_size, -1, self.reduction_factor * dim)
 
         if self.enable_input_norm:
             input_values = self.layer_norm(input_values)
 
-        quantized_input_lengths = input_lengths // self.reduction_factors
-        recover_input_lengths = quantized_input_lengths * self.reduction_factors
+        quantized_input_lengths = input_lengths // self.reduction_factor
+        recover_input_lengths = quantized_input_lengths * self.reduction_factor
 
         masked_input_values, masked_target_values, time_mask_indices = self.masking(
             input_values, quantized_input_lengths
@@ -342,6 +354,12 @@ class BestRqFramework(BaseModule):
             ),
         )
         return plot_cfg
+
+    def create_dummy_input(self, batch_size, bucket_boundary):
+        dummy_input = torch.randn(batch_size, self.feature_dim, bucket_boundary).to(torch.bfloat16)
+        dummy_length = torch.randint(bucket_boundary // 2, bucket_boundary, (batch_size,))
+        dummy_length[-1] = bucket_boundary
+        return dict(mel=dummy_input, mel_lengths=dummy_length)
 
 
 @register_model
@@ -489,20 +507,20 @@ class BestRqCTC(BestRqFramework):
 
             input_values = rearrange(input_values, "b c l -> b l c")
 
-            if not num_steps % self.reduction_factors == 0:
-                num_steps = (num_steps // self.reduction_factors) * self.reduction_factors
+            if not num_steps % self.reduction_factor == 0:
+                num_steps = (num_steps // self.reduction_factor) * self.reduction_factor
                 input_values = input_values[:, :num_steps]
 
             # [B, L//4 * 4, 128] => # [B, L//4, 512]
-            input_values = input_values.reshape(batch_size, -1, self.reduction_factors * dim)
+            input_values = input_values.reshape(batch_size, -1, self.reduction_factor * dim)
 
             if self.enable_input_norm:
                 input_values = self.layer_norm(input_values)
 
             recover_input_values = input_values.reshape(batch_size, num_steps, -1)
 
-            quantized_input_lengths = input_lengths // self.reduction_factors
-            recover_input_lengths = quantized_input_lengths * self.reduction_factors
+            quantized_input_lengths = input_lengths // self.reduction_factor
+            recover_input_lengths = quantized_input_lengths * self.reduction_factor
             self.encoder.eval()
             enc2_out, _ = self.encoder(recover_input_values, recover_input_lengths, layer_idx=self.layer_idx)
         enc2_out = self.out_ln(enc2_out)

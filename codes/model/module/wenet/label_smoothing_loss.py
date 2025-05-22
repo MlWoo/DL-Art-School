@@ -75,8 +75,7 @@ class LabelSmoothingLoss(nn.Module):
         Returns:
             loss (torch.Tensor) : The KL loss, scalar float value
         """
-        assert x.size(2) == self.size
-        batch_size = x.size(0)
+        assert x.size(-1) == self.size
         x = x.view(-1, self.size)
         # use zeros_like instead of torch.no_grad() for true_dist,
         # since no_grad() can not be exported by JIT
@@ -89,5 +88,5 @@ class LabelSmoothingLoss(nn.Module):
             target = target.masked_fill(ignore, 0)  # avoid -1 index
             true_dist.scatter_(1, target.unsqueeze(1), self.confidence)
         kl = self.criterion(torch.log_softmax(x, dim=1), true_dist)
-        denom = total if self.normalize_length else batch_size
+        denom = total if self.normalize_length else x.size(0)
         return kl.masked_fill(ignore.unsqueeze(1), 0).sum() / denom

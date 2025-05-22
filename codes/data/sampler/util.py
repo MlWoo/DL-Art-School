@@ -6,7 +6,7 @@ import torch
 
 def split_with_n(iterable, n):
     i = iter(iterable)
-    piece = islice(i, n)
+    piece = islice(i, n, None)
     return piece
 
 

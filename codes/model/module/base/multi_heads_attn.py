@@ -267,9 +267,9 @@ class MultiHeadAttn(nn.Module):
         self.sample_t = 1
         self.lookforward_size = lookforward_size
         self.channel_last = channel_last
-        self.reset_parameters()
         self.score_mask_value = float("-inf")
         self.sdpa = hasattr(torch.nn.functional, "scaled_dot_product_attention")
+        self.reset_parameters()
 
     def reset_parameters(self):
         bound = 1.0 / math.sqrt(self.n_state)
@@ -292,6 +292,7 @@ class MultiHeadAttn(nn.Module):
             )
             nn.init.kaiming_uniform_(self.inner_proj_qkv.op.weight[(self.n_state * 2) :, :], a=math.sqrt(5))
             nn.init.uniform_(self.inner_proj_qkv.op.bias, -bound, bound)
+
         nn.init.kaiming_uniform_(self.proj.op.weight, a=math.sqrt(5))
         bound = 1.0 / math.sqrt(self.out_size)
         nn.init.uniform_(self.proj.op.bias, -bound, bound)
@@ -457,9 +458,9 @@ class MultiHeadAttn(nn.Module):
             logger.info(
                 f"It's very slow to use num_attn: {num_attn} to record all attention weights when formal training."
             )
-            return self.cxt_dropout(context), attn.detach().cpu()
+            return self.cxt_dropout(context), attn.detach()
         else:
-            return self.cxt_dropout(context), attn.detach()[:num_attn].cpu()
+            return self.cxt_dropout(context), attn.detach()[:num_attn]
 
     def _apply_rotary_embedding(self, hidden_states, relative_position_embeddings):
         batch_size, sequence_length, hidden_size = hidden_states.size()

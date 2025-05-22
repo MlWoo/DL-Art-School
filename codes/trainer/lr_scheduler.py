@@ -100,6 +100,7 @@ class MultiStepLR_Restart(_LRScheduler):
         # Note to self: for the purposes of this trainer, "last_epoch" should read "last_step"
         if self.force_lr is not None:
             return [self.force_lr for _ in self.optimizer.param_groups]
+
         if self.last_epoch in self.restarts:
             if self.clear_state:
                 self.optimizer.state = defaultdict(dict)
@@ -109,8 +110,22 @@ class MultiStepLR_Restart(_LRScheduler):
             factor = 1 - (self.warmup - self.last_epoch) / self.warmup
             return [group["initial_lr"] * factor for group in self.optimizer.param_groups]
         if self.last_epoch not in self.milestones:
-            return [group["lr"] for group in self.optimizer.param_groups]
-        return [group["lr"] * self.gamma ** self.milestones[self.last_epoch] for group in self.optimizer.param_groups]
+            if self.optimizer.param_groups[0]["lr"] > 0.0:
+                return [group["lr"] for group in self.optimizer.param_groups]
+            else:
+                last_lrs = [group["initial_lr"] for group in self.optimizer.param_groups]
+                for milestone, count in self.milestones.items():
+                    if self.last_epoch < milestone:
+                        lrs = last_lrs
+                        break
+                    else:
+                        lrs = [lr * self.gamma**count for lr in last_lrs]
+                        last_lrs = lrs
+                return lrs
+        else:
+            factor = self.gamma ** self.milestones[self.last_epoch]
+
+        return [group["lr"] * factor for group in self.optimizer.param_groups]
 
     # Allow this scheduler to use newly appointed milestones partially through a training run..
     def load_state_dict(self, s):

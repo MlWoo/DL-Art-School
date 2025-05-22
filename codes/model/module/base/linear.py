@@ -1,10 +1,11 @@
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import torch
 from torch import Tensor, nn
 
 from .activation import ACT2FN
 from .dropout import Dropout
+from .util import extend2tuple
 
 
 class Linear(nn.Module):
@@ -144,3 +145,94 @@ class LinearBlock(nn.Module):
         if x_mask is not None:
             x = x * x_mask
         return x
+
+
+class MultiLinearLayers(nn.Module):
+    def __init__(
+        self,
+        layers: int,
+        in_dim: int,
+        inner_dim: int,
+        ops_seq: Union[Tuple[str, ...], Tuple[Tuple[str, ...], ...]] = ("linear", "relu", "dropout"),
+        dropout_p: float = 0.0,
+        dropout_mode: str = "norm",
+        dim_back: bool = False,
+        per_residual: bool = False,
+        residual: bool = False,
+        last_activated: bool = False,
+        channel_last: bool = True,
+        spectral_norm: bool = False,
+    ):
+        super().__init__()
+        if residual:
+            dim_back = True
+        self.residual = residual
+
+        assert isinstance(inner_dim, (int, list, tuple))
+        in_dim_tuple = (in_dim,) + extend2tuple(inner_dim, layers - 1)
+        if dim_back:
+            out_dim_tuple = extend2tuple(inner_dim, layers - 1) + (in_dim,)
+        else:
+            out_dim_tuple = extend2tuple(inner_dim, layers)
+
+        assert isinstance(dropout_p, (float, list, tuple))
+        dropout_p_tuple = extend2tuple(dropout_p, layers)
+        assert isinstance(dropout_mode, (str, list, tuple))
+        dropout_mode_tuple = extend2tuple(dropout_mode, layers)
+
+        assert isinstance(per_residual, (bool, list, tuple))
+        per_residual_tuple = extend2tuple(per_residual, layers)
+        assert isinstance(channel_last, (bool, list, tuple))
+        channel_last_tuple = extend2tuple(channel_last, layers)
+        assert isinstance(spectral_norm, (bool, list, tuple))
+        spectral_norm_tuple = extend2tuple(spectral_norm, layers)
+
+        self.linear_modules = nn.ModuleList()
+        for i in range(layers):
+            disable_afn = (last_activated) and (i == layers - 1)
+            if isinstance(ops_seq[0], tuple):
+                assert (
+                    len(ops_seq) == layers
+                ), f"if ops_seq is double-nested list or tuple, the length \
+                        should be layers_num, but got {len(ops_seq)} vs expected {layers}"
+                block = LinearBlock(
+                    in_features=in_dim_tuple[i],
+                    out_features=out_dim_tuple[i],
+                    ops_seq=ops_seq[i],
+                    dropout_p=dropout_p_tuple[i],
+                    dropout_mode=dropout_mode_tuple[i],
+                    disable_afn=disable_afn,
+                    res=per_residual_tuple[i],
+                    channel_last=channel_last_tuple[i],
+                    spectral_norm=spectral_norm_tuple[i],
+                )
+            else:
+                block = LinearBlock(
+                    in_features=in_dim_tuple[i],
+                    out_features=out_dim_tuple[i],
+                    ops_seq=ops_seq,
+                    dropout_p=dropout_p_tuple[i],
+                    dropout_mode=dropout_mode_tuple[i],
+                    disable_afn=disable_afn,
+                    res=per_residual_tuple[i],
+                    channel_last=channel_last_tuple[i],
+                    spectral_norm=spectral_norm_tuple[i],
+                )
+            self.linear_modules.append(block)
+
+    def forward(self, x: Tensor, x_mask: Optional[Tensor] = None) -> Tensor:
+        """
+        :param x: [B x C x T]
+        :return:
+        """
+        if self.residual:
+            res = x
+            for module in self.linear_modules:
+                x = module(x)
+            x = res + x
+        else:
+            for module in self.linear_modules:
+                x = module(x)
+        if x_mask is not None:
+            x = x * x_mask
+        return x  # B x C x T

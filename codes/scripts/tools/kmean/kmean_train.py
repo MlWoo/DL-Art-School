@@ -1,9 +1,11 @@
+import argparse
 import os
 import sys
 
 cur_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(f"{cur_path}/")
-import argparse
+
+
 from kmeans_monster import KMeanReservoir
 from utils import options as option
 

@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from stringcolor import cs
 
 from .norms import with_codebook_normalization
 from .vq import VectorQuant
@@ -29,6 +28,8 @@ class ResidualVectorQuant(VectorQuant):
 
         if not share and not feature_size % groups == 0:
             e_msg = f"feature_size {feature_size} must be divisible by residual groups {groups}."
+            from stringcolor import cs
+
             raise RuntimeError(str(cs(e_msg, "red")))
 
         self.groups = groups

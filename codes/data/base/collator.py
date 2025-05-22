@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 from utils.distributed import apply_to_sample
 
-from data.builder import COLLATIONS
+from data.builder import COLLATIONS, build_transforms
 from data.sampler.util import find_surrounding_elements
 
 Tensor = torch.Tensor
@@ -18,6 +18,7 @@ class Collator(object):
         apply_half = opt.get("apply_half", False)
         half_type = opt.get("half_type", "fp16")
         half_list = opt.get("half_list", None)
+        transforms = opt.get("transforms", None)
         self.batch_size = batch_size
         self.buffer_batch_group = buffer_batch_group
         self.data_cfg = data_cfg
@@ -27,6 +28,15 @@ class Collator(object):
         self.inter_post = True
         self.ignored_keys = []
         self.bucket_boundaries_batch_size_map = {}
+        if transforms is None:
+            self.transforms = None
+        else:
+            self.transforms = build_transforms(transforms)
+
+    def _apply_augmentations_(self, batch_dict):
+        for augmentation in self.augmentations:
+            batch_dict = augmentation(batch_dict)
+        return batch_dict
 
     def _postprocess_items_(self, batch_dict):
         return batch_dict

@@ -1,3 +1,4 @@
+import contextlib
 from collections import OrderedDict
 
 import maybe_bnb as mbnb
@@ -352,6 +353,8 @@ class ConfigurableStep(Module):
             training_name = self.step_opt["training"]
             training_net = self.get_network_for_name(training_name)
             step = "forward"
+            if local_raise_oom is not None and not local_raise_oom:
+                no_ddp_sync = True
             try:
                 if no_ddp_sync and hasattr(training_net, "no_sync"):
                     with training_net.no_sync():
@@ -437,7 +440,8 @@ class ConfigurableStep(Module):
                 # Get dem grads!
                 step = "backward"
                 if local_raise_oom is not None and not local_raise_oom:
-                    with training_net.no_sync():
+                    context = contextlib.nullcontext()  # no_sync context
+                    with context:
                         try:
                             self.scaler.scale(total_loss).backward()
                         except RuntimeError as e:

@@ -99,7 +99,7 @@ dataloaders:
           mode: HuggingfaceMinmoASRDataset
           store_type: parquet #json
           data_file: /home/wumenglin/repo-dev/dl-art-school/codes/scripts/peoples_speech/dirty/train*
-          read_keys: 
+          read_keys:
             - 'audio'
             - 'audio_lengths'
             - text
@@ -109,7 +109,7 @@ dataloaders:
           mode: HuggingfaceMinmoASRDataset
           store_type: parquet #json
           data_file: /home/wumenglin/repo-dev/dl-art-school/codes/scripts/peoples_speech/dirty_sa/train*
-          read_keys: 
+          read_keys:
             - 'audio'
             - 'audio_lengths'
             - text
@@ -119,7 +119,7 @@ dataloaders:
           mode: HuggingfaceMinmoASRDataset
           store_type: parquet #json
           data_file: /home/wumenglin/repo-dev/dl-art-school/codes/scripts/peoples_speech/clean/train*
-          read_keys: 
+          read_keys:
             - 'audio'
             - 'audio_lengths'
             - text
@@ -129,7 +129,7 @@ dataloaders:
           mode: HuggingfaceMinmoASRDataset
           store_type: parquet #json
           data_file: /home/wumenglin/repo-dev/dl-art-school/codes/scripts/peoples_speech/clean_sa/train*
-          read_keys: 
+          read_keys:
             - 'audio'
             - 'audio_lengths'
             - text
@@ -295,7 +295,7 @@ dataloaders:
 num_model_dim: &num_model_dim 1024
 networks:
   gpt:
-    type: generator 
+    type: generator
     which_model_G: qwen2_asr # none of the unified_voice*.py files actually match the tortoise inference code... 4 and 3 have "alignment_head" (wtf is that?), 2 lacks the types=1 parameter.
     save_freeze: false
     kwargs:
@@ -341,7 +341,7 @@ networks:
         stream_chunk_size: null #160ms
         lookforward_size: 6 # 240ms  240 / 10 / 2 = 12
         final_LN: false
-    
+
       encoder_pretrained: /home/wumenglin/repo-dev/DL-Art-School-dev/experiments/streamconformer-bestrq_gelu-causal-sub1-stat-ft240ms-v2-no-final-ln-fix-mask-25hz/models-clean/590000_generator.pth
       encoder_freeze: false
       encoder_layer_idx: *layer_idx

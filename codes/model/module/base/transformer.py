@@ -1,6 +1,7 @@
 import inspect
 import math
 from abc import ABCMeta, abstractmethod
+from functools import partial
 from typing import Optional, Tuple, Union
 
 import torch
@@ -34,8 +35,9 @@ class AbcResAttnBlock(nn.Module, metaclass=ABCMeta):
         conformer_conv_dropout_p: float = 0.0,
         causal: bool = False,
         padding_mode: str = "zeros",
-        pre_conv_module: bool = True,
+        pre_conv_module: bool = False,
         pre_LN: bool = False,
+        block_LN: bool = False,
         concat_after: bool = False,
         LN_learnable: bool = True,
         channel_last: bool = True,
@@ -145,6 +147,13 @@ class AbcResAttnBlock(nn.Module, metaclass=ABCMeta):
         self.LN_learnable = LN_learnable
         self.pre_conv_module = pre_conv_module
         self.channel_last = channel_last
+        if block_LN and pre_LN:
+            if LN_learnable:
+                self.final_LN = nn.LayerNorm(attn_size)
+            else:
+                self.final_LN = ForgottenLayerNorm(attn_size)
+        else:
+            self.final_LN = nn.Identity()
 
     def get_kwargs(self, init_func, local_vars):
         module_kwargs = inspect.getfullargspec(init_func).args
@@ -162,8 +171,8 @@ class AbcResAttnBlock(nn.Module, metaclass=ABCMeta):
         enc_kv: Optional[Tensor] = None,
         x_mask: Optional[Tensor] = None,
         kv_mask: Optional[Tensor] = None,
-        outter_score_mask: Optional[Tensor] = None,
         score_mask: Optional[Tensor] = None,
+        outter_score_mask: Optional[Tensor] = None,
         sample: bool = False,
         num_attn: int = 0,
         pos_info: Optional[Tensor] = None,
@@ -223,7 +232,7 @@ class AbcResAttnBlock(nn.Module, metaclass=ABCMeta):
             x = self.layernorm(x, idx=0)
 
         # post conv module
-        if self.pre_conv_module and self.conv_module is not None:
+        if not self.pre_conv_module and self.conv_module is not None:
             residual = x
             if self.pre_LN:
                 x = self.layernorm(x, idx=3)
@@ -248,6 +257,8 @@ class AbcResAttnBlock(nn.Module, metaclass=ABCMeta):
         if not self.pre_LN:
             x = self.layernorm(x, idx=1)
 
+        x = self.final_LN(x)
+
         return x, attn, score_mask
 
 
@@ -267,8 +278,9 @@ class ResAttnBlock(AbcResAttnBlock):
         conv_module_kernel_size: int = 31,
         conformer_conv_dropout_p: float = 0.0,
         norm_groups: int = 0,
-        pre_conv_module: bool = True,
+        pre_conv_module: bool = False,
         pre_LN: bool = False,
+        block_LN: bool = False,
         concat_after: bool = False,
         causal: bool = False,
         padding_mode: str = "zeros",
@@ -297,8 +309,9 @@ class AdaptLNResAttnBlock(AbcResAttnBlock):
         conv_module_kernel_size: int = 31,
         conformer_conv_dropout_p: float = 0.0,
         norm_groups: int = 0,
-        pre_conv_module: bool = True,
+        pre_conv_module: bool = False,
         pre_LN: bool = False,
+        block_LN: bool = False,
         concat_after: bool = False,
         causal: bool = False,
         padding_mode: str = "zeros",
@@ -387,9 +400,10 @@ class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
         conv_module_kernel_size: int = 31,
         conformer_conv_dropout_p: float = 0.0,
         norm_groups: int = 0,
-        pre_conv_module: bool = True,
+        pre_conv_module: bool = False,
         ffn_cat_after: bool = False,
         pre_LN: bool = True,
+        block_LN: bool = False,
         final_LN: bool = True,
         causal: bool = False,
         padding_mode: str = "zeros",
@@ -401,6 +415,7 @@ class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
         window_size: int = 5,
         zero_triu: bool = False,
         max_len: int = 1024,
+        gradient_checkpointing: bool = False,
     ):
         """Transformer.
         https://arxiv.org/pdf/2002.04745v1.pdf
@@ -487,6 +502,7 @@ class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
                 norm_groups=norm_groups,
                 pre_conv_module=pre_conv_module,
                 pre_LN=pre_LN,
+                block_LN=block_LN,
                 concat_after=ffn_cat_after,
                 causal=causal,
                 padding_mode=padding_mode,
@@ -506,6 +522,8 @@ class AbcTransformerBlocks(nn.Module, metaclass=ABCMeta):
         self.chunkwise_size = chunkwise_size
         self.stream_chunk_size = stream_chunk_size
         self.lookforward_size = lookforward_size
+        self.gradient_checkpointing = gradient_checkpointing
+        self._gradient_checkpointing_func = partial(torch.utils.checkpoint.checkpoint, use_reentrant=False)
 
     def get_kwargs(self, init_func, local_vars):
         module_kwargs = inspect.getfullargspec(init_func).args
@@ -635,9 +653,10 @@ class TransformerBlocks(AbcTransformerBlocks):
         conv_module_kernel_size: int = 31,
         conformer_conv_dropout_p: float = 0.0,
         norm_groups: int = 0,
-        pre_conv_module: bool = True,
+        pre_conv_module: bool = False,
         ffn_cat_after: bool = False,
         pre_LN: bool = True,
+        block_LN: bool = False,
         final_LN: bool = True,
         causal: bool = False,
         padding_mode: str = "zeros",
@@ -649,6 +668,7 @@ class TransformerBlocks(AbcTransformerBlocks):
         lookforward_size: Optional[int] = None,
         zero_triu: bool = False,
         max_len: int = 1024,
+        gradient_checkpointing: bool = False,
     ):
         module_kwargs = super().get_kwargs(self.__init__, locals())
         super().__init__(**module_kwargs)
@@ -682,17 +702,31 @@ class TransformerBlocks(AbcTransformerBlocks):
         hidden_state_tuple = []
         score_mask_tuple = []
         for i, block in enumerate(self.layers):
-            x, attn, score_mask_out = block(
-                x,
-                enc_kv=enc_kv,
-                x_mask=x_mask,
-                kv_mask=kv_mask,
-                score_mask=score_mask,
-                outter_score_mask=outter_score_mask,
-                sample=sample,
-                num_attn=num_attn,
-                pos_info=pos_info,
-            )
+            if self.gradient_checkpointing and self.training:
+                x, attn, score_mask_out = self._gradient_checkpointing_func(
+                    block.__call__,
+                    x,
+                    enc_kv,
+                    x_mask,
+                    kv_mask,
+                    score_mask,
+                    outter_score_mask,
+                    sample,
+                    num_attn,
+                    pos_info,
+                )
+            else:
+                x, attn, score_mask_out = block(
+                    x,
+                    enc_kv=enc_kv,
+                    x_mask=x_mask,
+                    kv_mask=kv_mask,
+                    score_mask=score_mask,
+                    outter_score_mask=outter_score_mask,
+                    sample=sample,
+                    num_attn=num_attn,
+                    pos_info=pos_info,
+                )
             if out_score_mask:
                 score_mask_tuple.append(score_mask_out if score_mask_out is not None else None)
             else:
@@ -705,7 +739,6 @@ class TransformerBlocks(AbcTransformerBlocks):
             if i == layer_idx:
                 hidden_state_tuple[-1] = x
                 return hidden_state_tuple, attn_tuple, score_mask_tuple
-
         if self.final_ln is not None:
             x = self.final_ln(x)
         if x_mask is not None:
@@ -757,9 +790,10 @@ class AdaptLNTransformerBlocks(AbcTransformerBlocks):
         conv_module_kernel_size: int = 31,
         conformer_conv_dropout_p: float = 0.0,
         norm_groups: int = 0,
-        pre_conv_module: bool = True,
+        pre_conv_module: bool = False,
         ffn_cat_after: bool = False,
         pre_LN: bool = True,
+        block_LN: bool = False,
         final_LN: bool = True,
         channel_last: bool = True,
         causal: bool = False,
@@ -770,6 +804,7 @@ class AdaptLNTransformerBlocks(AbcTransformerBlocks):
         lookforward_size: Optional[int] = None,
         zero_triu: bool = False,
         max_len: int = 1024,
+        gradient_checkpointing: bool = False,
     ):
         module_kwargs = super().get_kwargs(self.__init__, locals())
         super().__init__(**module_kwargs)
@@ -897,9 +932,10 @@ class ResAdaptTransformerBlocks(AbcTransformerBlocks):
         conv_module_kernel_size: int = 31,
         conformer_conv_dropout_p: float = 0.0,
         norm_groups: int = 0,
-        pre_conv_module: bool = True,
+        pre_conv_module: bool = False,
         ffn_cat_after: bool = False,
         pre_LN: bool = True,
+        block_LN: bool = False,
         final_LN: bool = True,
         channel_last: bool = True,
         causal: bool = False,
@@ -910,6 +946,7 @@ class ResAdaptTransformerBlocks(AbcTransformerBlocks):
         lookforward_size: Optional[int] = None,
         zero_triu: bool = False,
         max_len: int = 1024,
+        gradient_checkpointing: bool = False,
     ):
         module_kwargs = super().get_kwargs(self.__init__, locals())
         super().__init__(**module_kwargs)
@@ -991,12 +1028,13 @@ class Transformer(nn.Module):
         cxt_dropout_p: float = 0.0,
         ffn_dropout_p: float = 0.0,
         pre_LN: bool = False,
+        block_LN: bool = False,
         final_LN: bool = True,
         use_macaron: bool = False,
         conv_module_type: Optional[str] = None,
         conv_module_kernel_size: int = 31,
         conformer_conv_dropout_p: float = 0.0,
-        pre_conv_module: bool = True,
+        pre_conv_module: bool = False,
         ffn_cat_after: bool = False,
         causal: bool = False,
         padding_mode: str = "zeros",
@@ -1008,6 +1046,7 @@ class Transformer(nn.Module):
         pos_dropout_p: float = 0.0,
         window_size: Optional[int] = None,
         max_len: int = 1000,
+        gradient_checkpointing: bool = False,
     ):
         super().__init__()
         if attn_type == "base":
@@ -1044,7 +1083,6 @@ class Transformer(nn.Module):
             self.x_scale = 1.0
         else:
             raise ValueError(f"Transformer: {attn_type} is not supported for the moment")
-
         self.layers = TransformerBlocks(
             in_attn_size=num_attn_in_dim,
             head_attn_size=num_attn_head_dim,
@@ -1061,6 +1099,7 @@ class Transformer(nn.Module):
             cxt_dropout_p=cxt_dropout_p,
             ffn_dropout_p=ffn_dropout_p,
             pre_LN=pre_LN,
+            block_LN=block_LN,
             use_macaron=use_macaron,
             conv_module_type=conv_module_type,
             conv_module_kernel_size=conv_module_kernel_size,
@@ -1076,6 +1115,7 @@ class Transformer(nn.Module):
             window_size=window_size,
             max_len=max_len,
             lookforward_size=lookforward_size,
+            gradient_checkpointing=gradient_checkpointing,
         )
         self.attn_type = attn_type
 
@@ -1103,38 +1143,25 @@ class Transformer(nn.Module):
                 fertilities is None or indices is None
             ), "The encoding is confused if both fertilities and indices are provided."
             x, pos_encoding = self.pos_enc(x, fertilities, indices)
-            hidden_state_tuple, attn_tuple, score_mask_tuple = self.layers(
-                x,
-                x_mask=x_mask,
-                enc_kv=enc_kv,
-                kv_mask=kv_mask,
-                outter_score_mask=outter_score_mask,
-                sample=sample,
-                out_hidden_states=out_hidden_states,
-                out_score_mask=out_score_mask,
-                num_attn=num_attn,
-                layer_idx=layer_idx,
-            )
+            pos_encoding = None
+        elif self.attn_type in ["rpr", "rope"]:
+            x, pos_encoding = self.pos_enc(x)
         else:
-            if self.attn_type in ["rpr", "rope"]:
-                x, pos_encoding = self.pos_enc(x)
-            else:
-                x = x * self.x_scale
-                pos_encoding = None
-            hidden_state_tuple, attn_tuple, score_mask_tuple = self.layers(
-                x,
-                pos_info=pos_encoding,
-                x_mask=x_mask,
-                enc_kv=enc_kv,
-                kv_mask=kv_mask,
-                outter_score_mask=outter_score_mask,
-                sample=sample,
-                out_hidden_states=out_hidden_states,
-                out_score_mask=out_score_mask,
-                num_attn=num_attn,
-                layer_idx=layer_idx,
-            )
-
+            x = x * self.x_scale
+            pos_encoding = None
+        hidden_state_tuple, attn_tuple, score_mask_tuple = self.layers(
+            x,
+            x_mask=x_mask,
+            enc_kv=enc_kv,
+            kv_mask=kv_mask,
+            outter_score_mask=outter_score_mask,
+            pos_info=pos_encoding,
+            sample=sample,
+            out_hidden_states=out_hidden_states,
+            out_score_mask=out_score_mask,
+            num_attn=num_attn,
+            layer_idx=layer_idx,
+        )
         return hidden_state_tuple, attn_tuple, score_mask_tuple
 
 
@@ -1155,12 +1182,13 @@ class TransformerCompile(nn.Module):
         cxt_dropout_p: float = 0.0,
         ffn_dropout_p: float = 0.0,
         pre_LN: bool = False,
+        block_LN: bool = False,
         final_LN: bool = True,
         use_macaron: bool = False,
         conv_module_type: Optional[str] = None,
         conv_module_kernel_size: int = 31,
         conformer_conv_dropout_p: float = 0.0,
-        pre_conv_module: bool = True,
+        pre_conv_module: bool = False,
         ffn_cat_after: bool = False,
         causal: bool = False,
         padding_mode: str = "zeros",
@@ -1172,6 +1200,7 @@ class TransformerCompile(nn.Module):
         pos_dropout_p: float = 0.0,
         window_size: Optional[int] = None,
         max_len: int = 1000,
+        gradient_checkpointing: bool = False,
     ):
         super().__init__()
         if attn_type == "base":
@@ -1225,6 +1254,8 @@ class TransformerCompile(nn.Module):
             cxt_dropout_p=cxt_dropout_p,
             ffn_dropout_p=ffn_dropout_p,
             pre_LN=pre_LN,
+            block_LN=block_LN,
+            final_LN=final_LN,
             use_macaron=use_macaron,
             conv_module_type=conv_module_type,
             conv_module_kernel_size=conv_module_kernel_size,
@@ -1236,10 +1267,10 @@ class TransformerCompile(nn.Module):
             chunkwise_size=chunkwise_size,
             stream_chunk_size=stream_chunk_size,
             norm_groups=norm_groups,
-            final_LN=final_LN,
             window_size=window_size,
             max_len=max_len,
             lookforward_size=lookforward_size,
+            gradient_checkpointing=gradient_checkpointing,
         )
         self.layers = self.blocks.layers
 

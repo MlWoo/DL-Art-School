@@ -107,10 +107,10 @@ class BufferedIteratorDataloader(object):
     def __len__(self):
         return self.total if self.predefine_len else len(self._iterable)
 
-    def set_epoch(self, epoch):
+    def set_epoch(self, epoch, copy_idx=0, sample_idx=0):
         del self._consumer
         self._consumer = None
-        self._iterable.set_epoch(epoch)
+        self._iterable.set_epoch(epoch, copy_idx, sample_idx)
 
     def take(self, n):
         self.total = min(self.total, n)
@@ -203,8 +203,8 @@ class GeneralDataloader(DataLoader):
         self.outer_iter + 1
         return batch_iterator
 
-    def set_epoch(self, epoch):
-        self.sampler.set_epoch(epoch)
+    def set_epoch(self, epoch, copy_idx=0, sample_idx=0):
+        self.sampler.set_epoch(epoch, copy_idx, sample_idx)
 
     def __len__(self):
         return self.sampler.num_batch
@@ -418,6 +418,11 @@ class GeneralSeqDataloader:
             if sampler_opt is None
             else sampler_opt.get("bucketed_batch_size_map", None)
         )
+        bucket_method = (
+            kwargs.get("bucket_method", "percent")
+            if sampler_opt is None
+            else sampler_opt.get("bucket_method", "percent")
+        )
 
         for phase, map_dataset_indice in dataset.phases_indice_dict.items():
             if phase == "train":
@@ -462,6 +467,7 @@ class GeneralSeqDataloader:
                 bucket_min_samples=bucket_min_samples,
                 bucket_max_samples=bucket_max_samples,
                 bucketed_batch_size_map=bucketed_batch_size_map,
+                bucket_method=bucket_method,
             )
             sampler.finalize_dataset(dataset=dataset, indices=map_dataset_indice, verbose=True)
             if sampler.batch_mode == "bucketed":

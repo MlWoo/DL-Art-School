@@ -226,6 +226,11 @@ class ExtensibleTrainer(BaseTrainer):
             if hasattr(net.module, "apply_compile"):
                 net.module.apply_compile()
 
+    def apply_auto_batch(self, auto_batch: bool = False):
+        for net in self.networks.values():
+            if hasattr(net.module, "apply_auto_batch"):
+                net.module.apply_auto_batch(auto_batch)
+
     def create_dummy_input(self, batch_size, bucket_boundary):
         pass
 

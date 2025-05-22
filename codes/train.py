@@ -51,6 +51,9 @@ class Trainer:
                 resume_state = None
         else:
             resume_state = None
+
+        sync_save = opt_get(opt, ["path", "async_save"], False)
+
         # mkdir and loggers
         if self.rank <= 0:  # normal training (self.rank -1) OR distributed training (self.rank 0)
             if resume_state is None:
@@ -113,7 +116,7 @@ class Trainer:
         seed += self.rank
         """
         utils.set_random_seed(seed)
-        torch.set_num_threads(8)
+        torch.set_num_threads(16)
 
         torch.backends.cudnn.benchmark = opt_get(opt, ["cuda_benchmarking_enabled"], True)
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -126,8 +129,6 @@ class Trainer:
 
         # create model
         self.model = ExtensibleTrainer(opt)
-        if opt_get(opt, ["apply_compile"], False):
-            self.model.apply_compile()
 
         # create train and val dataloader
         dataset_ratio = 1  # enlarge the size of each epoch
@@ -181,6 +182,7 @@ class Trainer:
                 else:
                     self.train_sampler = None
                     shuffle = True
+
                 loader = create_dataloader(
                     self.train_set, dataloader_opt, opt, self.train_sampler, collate_fn=collate_fn, shuffle=shuffle
                 )
@@ -206,7 +208,9 @@ class Trainer:
             if self.val_loader is not None:
                 self.logger.info("Searching for best batch size for val loader if batch mode is bucketed")
                 self.search_and_sync_batch_size_for_bucket(self.val_loader, "val")
-
+        if opt_get(opt, ["apply_compile"], False):
+            self.model.apply_compile()
+        self.model.apply_auto_batch(auto_batch=False)
         # Evaluators
         self.evaluators = []
         if "eval" in opt.keys() and "evaluators" in opt["eval"].keys():
@@ -281,6 +285,7 @@ class Trainer:
         will_log = self.current_step % opt["logger"]["print_freq"] == 0
         will_visual = (
             "visuals" in self.opt["logger"].keys()
+            and opt_get(self.opt, ["enable_visual"], False)
             and self.rank <= 0
             and self.current_step % self.opt["logger"]["visual_debug_rate"] == 0
         )
@@ -465,7 +470,7 @@ class Trainer:
                 for k, v in reduced_metrics.items():
                     val = torch.stack(v).mean().item()
                     self.tb_logger.add_scalar(f"val_{k}", val, self.current_step)
-                    print(f">>Eval {k}: {val}")
+                    self.logger.info(f"Eval {k}: {val}")
                 if opt["wandb"]:
                     import wandb
 
@@ -477,7 +482,7 @@ class Trainer:
                 if eval.uses_all_ddp or self.rank <= 0:
                     eval_dict.update(eval.perform_eval())
             if self.rank <= 0:
-                print("Evaluator results: ", eval_dict)
+                self.logger.info("Evaluator results: ", eval_dict)
                 for ek, ev in eval_dict.items():
                     self.tb_logger.add_scalar(ek, ev, self.current_step)
                 if opt["wandb"]:
@@ -498,7 +503,14 @@ class Trainer:
             if False and self.opt["dist"]:
                 self.train_sampler.set_epoch(epoch)
             if hasattr(self.train_loader, "set_epoch"):
-                self.train_loader.set_epoch(epoch)
+                if epoch == 0:
+                    inter_step = self.current_step
+                # elif epoch == 1:
+                #     inter_step = 12570
+                else:
+                    inter_step = 0
+
+                self.train_loader.set_epoch(epoch, 0, inter_step)
 
             tq_ldr = (
                 tqdm(self.train_loader, miniters=opt["logger"]["print_freq"]) if self.rank <= 0 else self.train_loader
@@ -564,10 +576,16 @@ class Trainer:
         assert hasattr(sampler, "bucket_boundaries"), "sampler must have bucket_boundaries attribute"
         assert hasattr(sampler, "bucket_max_samples"), "sampler must have bucket_max_batch_size attribute"
         assert hasattr(sampler, "bucket_min_samples"), "sampler must have bucket_min_batch_size attribute"
-        assert hasattr(dataset, "create_dummy_input"), "dataset must have create_dummy_input attribute"
+        network = self.model.netsG["generator"]
+        if hasattr(network, "module"):
+            create_dummy_input = network.module.create_dummy_input
+        else:
+            create_dummy_input = network.create_dummy_input
+
+        self.model.apply_auto_batch(auto_batch=True)
 
         def check_oom(batch_size, bucket_boundary):
-            dummy_input = dataset.create_dummy_input(batch_size, bucket_boundary)
+            dummy_input = create_dummy_input(batch_size, bucket_boundary)
             self.model.feed_data(dummy_input, self.current_step, perform_micro_batching=False)
             if phase == "train":
                 is_oom, _ = self.model.optimize_parameters(self.current_step, return_grad_norms=False, raise_oom=False)
@@ -575,12 +593,22 @@ class Trainer:
                 is_oom, _ = self.model.test(raise_oom=False)
             return is_oom
 
+        def check_oom_with_trials(batch_size, bucket_boundary, trials=3):
+            for i in range(trials):
+                is_oom = check_oom(batch_size, bucket_boundary)
+                if not is_oom:
+                    break
+            return is_oom
+
         def search_batch_size(batch_size_start, bucket_boundary):
             batch_size = batch_size_start
             is_oom = False
             step = 1
             while not is_oom:
-                is_oom = check_oom(batch_size, bucket_boundary)
+                is_oom = check_oom(
+                    batch_size,
+                    bucket_boundary,
+                )
                 if not is_oom:
                     step *= 2
                 batch_size += step
@@ -619,24 +647,45 @@ class Trainer:
         torch.cuda.set_per_process_memory_fraction(
             opt_get(self.opt, ["search_batch_size_for_bucket_max_memory_fraction"], 0.8)
         )
+        search_interval = min(sampler.bucket_max_samples // (len(sampler.bucket_boundaries) * 2), 8)
         for bucket_boundary in sampler.bucket_boundaries:
             if pre_bucket_boundary is not None:
                 assert bucket_boundary > pre_bucket_boundary, "bucket_boundary must be greater than pre_bucket_boundary"
+                pre_batch_size = min(pre_batch_size, int(pre_bucket_boundary / bucket_boundary * pre_batch_size * 1.3))
             found = False
-            for batch_size in range(pre_batch_size, sampler.bucket_min_samples, -2):
-                for i in range(3):
-                    is_oom = check_oom(batch_size, bucket_boundary)
-                    if is_oom:
-                        break
-                if not is_oom:
+            if pre_batch_size > 2 * search_interval:
+                min_batch_size = sampler.bucket_min_samples
+            else:
+                min_batch_size = 1
+                search_interval = 1
+            for batch_size in range(pre_batch_size, min_batch_size, -search_interval):
+                local_cnt = 0
+                is_oom = check_oom_with_trials(batch_size, bucket_boundary, 1)
+                if self.opt["dist"]:
+                    dist.barrier()
+                print(f"Checking {batch_size=} with {bucket_boundary=} is_oom={is_oom}")
+
+                if is_oom:
+                    extra_test = False
+                else:
+                    extra_test = True
+
+                while not is_oom and batch_size < pre_batch_size and local_cnt < search_interval:
                     batch_size += 1
-                    for i in range(3):
-                        is_oom = check_oom(batch_size, bucket_boundary)
-                        if is_oom:
-                            break
+                    is_oom = check_oom_with_trials(batch_size, bucket_boundary, 1)
+                    if self.opt["dist"]:
+                        dist.barrier()
+                    print(f"Checking {batch_size=} with {bucket_boundary=} is_oom={is_oom}")
+                    local_cnt += 1
                     if is_oom:
                         batch_size -= 1
-                        is_oom = False
+
+                if extra_test:
+                    is_oom = check_oom_with_trials(batch_size, bucket_boundary, 2)
+
+                if is_oom and extra_test:
+                    batch_size -= 1
+                    is_oom = check_oom_with_trials(batch_size, bucket_boundary, 2)
 
                 if not is_oom:
                     if batch_size == sampler.bucket_max_samples:
@@ -689,7 +738,8 @@ class Trainer:
     def sync_dataloader_config(self, dataloader, bucket_boundaries_batch_size_map):
         dataloader.sampler.bucket_boundaries_batch_size_map = bucket_boundaries_batch_size_map
         dataloader.collate_fn.set_bucketed_batch_size(dataloader.sampler.similar_type, bucket_boundaries_batch_size_map)
-        self.model.apply_compile()
+        # self.model.apply_compile()
+        # self.model.apply_auto_batch(auto_batch=False)
 
 
 if __name__ == "__main__":
@@ -744,6 +794,8 @@ if __name__ == "__main__":
             torch.cuda.set_device(opt["gpu_ids"][0])
     elif launcher == "torchrun":
         opt["dist"] = True
+        if opt_get(opt, ["dist_backend"], None) is None:
+            opt["dist_backend"] = "ddp"
         init_dist(launcher, "nccl")
         trainer.world_size = torch.distributed.get_world_size()
         trainer.rank = torch.distributed.get_rank()
@@ -769,9 +821,14 @@ if __name__ == "__main__":
     try:
         trainer.do_training()
     except KeyboardInterrupt:
-        logger = logging_utils.get_root_logger()
-        logger.info("KeyboardInterrupt or exception occurs. Waiting a moment ...")
         with DelayedInterrupt([signal.SIGTERM, signal.SIGINT]):
-            PathManager.async_close()
+            logger = logging_utils.get_root_logger()
+            logger.info("KeyboardInterrupt or exception occurs. Waiting a moment ...")
+            # PathManager.async_close()
             os.kill(os.getpid(), signal.SIGINT)
             os.kill(os.getpid(), signal.SIGTERM)
+    # except Exception as e:
+    #     logger = logging_utils.get_root_logger()
+    #     logger.error(f"Exception occurs: {e}")
+    # finally:
+    #     trainer.save_checkpoint()

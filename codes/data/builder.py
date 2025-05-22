@@ -5,6 +5,7 @@ from utils.registry import Registry, build_from_cfg
 DATASETS = Registry("dataset", registor="DLAS")
 COLLATIONS = Registry("collation", registor="DLAS")
 TOKENIZERS = Registry("tokenizer", registor="DLAS")
+TRANSFORMS = Registry("transform", registor="DLAS")
 
 
 def build_tokenizer(cfg, default_args=None, default_type="type"):
@@ -56,3 +57,12 @@ def build_datasets(cfg, default_args=None):
         dataset = build_from_cfg(datasets_cfg, DATASETS, default_args)
 
     return dataset
+
+
+def build_transforms(cfg, default_args=None, default_type="type"):
+    if isinstance(cfg, list):
+        transforms = [build_from_cfg(c, TRANSFORMS, default_args, default_type=default_type) for c in cfg]
+    else:
+        transforms = [build_from_cfg(cfg, TRANSFORMS, default_args, default_type=default_type)]
+
+    return transforms

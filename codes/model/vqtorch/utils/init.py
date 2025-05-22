@@ -4,7 +4,6 @@ import torch
 import torch.nn.functional as F
 import vqtorch
 from einops import repeat
-from stringcolor import cs
 
 
 def l2norm(t):
@@ -63,6 +62,8 @@ def data_dependent_init_forward_hook(self, inputs, outputs, use_kmeans=True, ver
         return
 
     if verbose:
+        from stringcolor import cs
+
         print(cs("initializing codebook with k-means++", "y"))
 
     def sample_centroids(z_e, num_codes):
@@ -75,6 +76,7 @@ def data_dependent_init_forward_hook(self, inputs, outputs, use_kmeans=True, ver
                 f"\ncodebook size > warmup samples: {num_codes} vs {z_e.size(0)}. "
                 + "recommended to decrease the codebook size or increase batch size."
             )
+            from stringcolor import cs
 
             warnings.warn(str(cs(e_msg, "yellow")))
 

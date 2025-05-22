@@ -12,14 +12,19 @@ from utils.logging_utils import get_root_logger
 from data.sampler.util import chunk, split_list, split_with_n
 
 
-def get_buckets(sizes, num_buckets):
-    buckets = np.unique(
-        np.percentile(
-            sizes,
-            np.linspace(0, 100, num_buckets + 1),
-            method="lower",
-        )[1:]
-    )
+def get_buckets(sizes, num_buckets, bucket_method="percent"):
+    if bucket_method == "percent":
+        buckets = np.unique(
+            np.percentile(
+                sizes,
+                np.linspace(0, 100, num_buckets + 1),
+                method="lower",
+            )[1:]
+        )
+    elif bucket_method == "size":
+        buckets = np.ceil(np.linspace(sizes.min(), sizes.max(), num_buckets + 1)[1:]).astype(int)
+    else:
+        raise ValueError(f"Invalid bucket method: {bucket_method}")
     return buckets
 
 
@@ -143,6 +148,7 @@ class LengthChunkSampler:
         bucket_batch_volume: Optional[int] = 32,
         bucket_boundaries: Optional[Tuple[int, ...]] = None,
         num_buckets: Optional[int] = None,
+        bucket_method: str = "percent",
         bucket_padding_noise: float = 0.0,
         batch_mode: str = "dynamical",
         acc_coeffs: Tuple[Tuple[float, float], ...] = ((1.0, 1.0),),
@@ -263,6 +269,7 @@ class LengthChunkSampler:
         self.bucket_max_samples = bucket_max_samples
         self.bucket_max_batch_tokens = bucket_max_batch_tokens
         self.bucket_boundaries_batch_size_map = bucketed_batch_size_map
+        self.bucket_method = bucket_method
         torch.manual_seed(seed)
 
     def finalize_dataset(self, dataset, indices: Union[torch.LongTensor, Tuple[int]], verbose: bool = True):
@@ -276,7 +283,7 @@ class LengthChunkSampler:
         sorted_type = self.limited_type if self.similar_type is None else self.similar_type
         if sorted_type is not None and self.bucket_boundaries is None and self.num_buckets is not None:
             sizes = torch.LongTensor(self.dataset.info_dict[sorted_type])[indices].numpy()
-            self.bucket_boundaries = torch.from_numpy(get_buckets(sizes, self.num_buckets))
+            self.bucket_boundaries = torch.from_numpy(get_buckets(sizes, self.num_buckets, self.bucket_method))
         if self.bucket_boundaries is not None and self.batch_mode == "bucketed":
             if self.bucket_boundaries_batch_size_map is None:
                 self.bucket_boundaries_batch_size_map = {}
@@ -623,16 +630,21 @@ class LengthChunkSampler:
             self.reset_iter()
             self.epoch = epoch
             self.copy_idx = copy_idx
-            self._sample_idx = sample_idx
             self.__real_iter__()
         self.protected = False
+        self._sample_idx = sample_idx
+        if sample_idx > 0:
+            remained = len(self.iterable) - sample_idx
+            piece = split_with_n(self.iterable, sample_idx)
+            self.iterable = piece
+            self.num_batch = remained
 
     def load_state_dict(self, state_dict):
         self.epoch = state_dict["epoch"]
         self.copy_idx = state_dict["copy_idx"]
         self._sample_idx = state_dict["sample_idx"]
         self.set_epoch(self.epoch, self.copy_idx, self._sample_idx)
-        self.protected = True
+        self.protected = False
 
     def state_dict(self):
         return {"epoch": self.epoch, "copy_idx": self.copy_idx, "sample_idx": self._sample_idx}
@@ -656,7 +668,7 @@ class LengthChunkSampler:
         self.iter_is_null = False
         if self.batch_mode != "dynamical":
             n = self.batch_size * n
-        piece = split_with_n(n, total_iterable)
+        piece = split_with_n(total_iterable, n)
         self.iterable = piece
         self.num_samples = n
         self.truncate_mode = True

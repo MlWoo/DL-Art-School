@@ -49,7 +49,7 @@ def cache_text_processor(eg, audio_token, tokenizers_dict=None):
     data_dict = {}
     if tokenizers_dict is not None:
         for key, tokenizer in tokenizers_dict.items():
-            text = eg["text"]
+            text = eg["text"].upper()
             token = apply_chat_template(text, tokenizer)
             token_name = "text_token"
             token_dict = {f"{token_name}": token, f"{token_name}_length": len(token)}
@@ -87,6 +87,8 @@ def process_speech_func(
 ):
     if "duration" in eg:
         duration = round(eg["duration"], 3)
+    elif "duration_ms" in eg:
+        duration = round(eg["duration_ms"] / 1000, 3)
     elif "begin_time" in eg and "end_time" in eg:
         duration = round(eg["end_time"] - eg["begin_time"], 3)
     else:
@@ -99,9 +101,21 @@ def process_speech_func(
 
     text = eg["text"]
     if rm_punc and dataset_name == "GigaSpeech":
-        text = re.sub(r"<.*?>", "", text)
+        text = re.sub(r"<[^>]*>\s*", "", text)
 
     return {"duration": duration, "speech_token_length": speech_token_length, "text": text}
+
+
+def apply_chat_template_clean(text, audio_token, tokenizer, speech_token_length):
+    chat = [
+        {
+            "role": "user",
+            "content": f"Transcribe the speech.<|startofspeech|>{audio_token * speech_token_length}<|endofspeech|>",  # noqa E501
+        }
+    ]
+    chat.append({"role": "assistant", "content": text})
+    tokens = tokenizer.apply_chat_template(chat)
+    return tokens
 
 
 @DATASETS.register_module()
@@ -186,7 +200,6 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
         self.sr = opt_get(opt, ["sample_rate"], 16000)
         dataset = self.normalize_dataset(dataset, sr=self.sr, rm_punc=opt_get(opt, ["rm_punc"], False))
         self.cache_text = opt_get(opt, ["cache_text"], False)
-
         if self.cache_text and self.tokenizers_dict is not None:
             dataset = dataset.map(
                 partial(cache_text_processor, tokenizers_dict=self.tokenizers_dict, audio_token=self.audio_token),
@@ -230,7 +243,7 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
             sample_frame_length=np.clip(frame_lengths, 0, sample_frame_length),
         )
 
-        self.dataset_len = len(dataset)
+        self.dataset_len = len(self.files)
 
         self.phases_indice_dict = self.create_datasets(
             phase,
@@ -238,9 +251,9 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
             phases_ratios=opt_get(opt, ["phases_ratios"], [0.985]),
             seed=opt_get(opt, ["seed"], 1234),
         )
-
-        self.info_dict["text_token_length"] = dataset["text_token_length"]
-        self.info_dict["speech_token_length"] = dataset["speech_token_length"]
+        if "text_token_length" in dataset.features:
+            self.info_dict["text_token_length"] = dataset["text_token_length"][mask]
+        self.info_dict["speech_token_length"] = dataset["speech_token_length"][mask]
 
         self.carry_filename = opt_get(opt, ["carry_filename"], False)
         self.selected_names = opt_get(opt, ["selected_names"], None)
@@ -254,6 +267,8 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
         self.dataset = dataset
         self.file_path_key = opt_get(opt, ["file_path_key"], "id")
         self.channels = opt_get(opt, ["channels"], 1)
+        self.hop_length = opt_get(opt, ["audio_process", "hop_length"], 160)
+        self.token_frame_rate2 = opt_get(opt, ["token_frame_rate2"], self.token_frame_rate)
 
     def normalize_dataset(self, dataset, **kwargs):
         dataset = dataset.map(
@@ -366,7 +381,7 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
 
         return data
 
-    def layout_data(self, asr_input_ids, text_token):
+    def layout_data(self, asr_input_ids, asr_input_ids_upper, text_token):
         input_type = []
         text_token_len = len(text_token)
         i = 0
@@ -376,10 +391,16 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
             else:
                 input_type.append(self.text_type)
             i += 1
-        assert (text_token[-(len(asr_input_ids) + 2) : -2] == asr_input_ids).all()
+        if (text_token[-(len(asr_input_ids) + 2) : -2] == asr_input_ids_upper).all():
+            pass
+        elif (text_token[-(len(asr_input_ids) + 2) : -2] == asr_input_ids).all():
+            text_token[-(len(asr_input_ids) + 2) : -2] = asr_input_ids_upper
+        else:
+            raise ValueError("No asr input ids found in text token")
+
         input_type[-(len(asr_input_ids) + 2) : -1] = [self.asr_text_type] * (len(asr_input_ids) + 1)
 
-        input_tokens = torch.Tensor(text_token).long()
+        input_tokens = torch.Tensor(text_token.copy()).long()
         input_type = torch.Tensor(input_type).long()
         asr_input_mask = input_type == self.asr_text_type
         asr_output_mask = torch.cat([asr_input_mask, torch.zeros(1, dtype=torch.bool)])[1:]
@@ -408,10 +429,10 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
             text_token = values_dict.pop(self.text_token_key)
         else:
             text = values_dict.pop(self.text_key)
-            if len(text) == 1:
-                text_token = np.asarray(self.text_tokenizer(text)["input_ids"], dtype=np.int32)
-            else:
-                text_token = [np.asarray(self.text_tokenizer(_text)["input_ids"], dtype=np.int32) for _text in text]
+            # if len(text) == 1:
+            #     text_token = np.asarray(self.text_tokenizer(text)["input_ids"], dtype=np.int32)
+            # else:
+            text_token = [np.asarray(self.text_tokenizer(_text)["input_ids"], dtype=np.int32) for _text in text]
 
         # list of list
         input_ids_list = []
@@ -419,8 +440,22 @@ class HuggingfaceMinmoASRDataset(AudioABCDataset):
         output_ids_list = []
         input_type_list = []
         for i, (asr_text, _text_token) in enumerate(zip(text, text_token)):
+            asr_input_ids_upper = self.text_tokenizer.encode(asr_text.upper(), add_special_tokens=False)
             asr_input_ids = self.text_tokenizer.encode(asr_text, add_special_tokens=False)
-            _input_ids, _output_ids, _input_type = self.layout_data(asr_input_ids, _text_token)
+            asr_input_ids_upper_arr = np.asarray(asr_input_ids_upper)
+            asr_input_ids_arr = np.asarray(_text_token)
+            speech_token_length = (_text_token == self.audio_token_id).sum()
+            speech_token_length = int(
+                values_dict["audio_lengths"][i] // self.hop_length // (100 // self.token_frame_rate2)
+            )
+
+            _text_token = np.asarray(
+                apply_chat_template_clean(asr_text.upper(), self.audio_token, self.text_tokenizer, speech_token_length),
+                dtype=np.int32,
+            )
+            asr_input_ids = asr_input_ids_upper
+
+            _input_ids, _output_ids, _input_type = self.layout_data(asr_input_ids, asr_input_ids_upper, _text_token)
 
             input_ids_list.append(_input_ids)
             output_ids_list.append(_output_ids)
@@ -453,11 +488,6 @@ class HuggingfaceMinmoASRLhotseDataset(HuggingfaceMinmoASRDataset):
         super().__init__(opt)
 
     def normalize_dataset(self, dataset, **kwargs):
-        sr = kwargs.get("sr", 16000)
-        dataset = dataset.filter(
-            lambda eg: eg["duration"] < self.max_duration - 1 / sr, num_proc=16, batch_size=32, writer_batch_size=192
-        )
-
         dataset = dataset.map(
             lambda eg: {
                 "speech_token_length": int(round(eg["duration"] * self.token_frame_rate, 3)),
@@ -487,8 +517,16 @@ class HuggingfaceMinmoASRLhotseDataset(HuggingfaceMinmoASRDataset):
         )
         return dataset
 
-    def get_item(self, item):
-        return self.dataset[item]
+    def get_audio_chunk(self, indice, item=None, offsets=None):
+        meta_list = self.dataset[indice]
+        return meta_list
+
+    def get_index_offset(self, indice):
+        # For a given dataset item and shift, return song index and offset within song
+        file_indice = []
+        for index in indice:
+            file_indice.append(self.files[index])
+        return file_indice, None
 
 
 if __name__ == "__main__":

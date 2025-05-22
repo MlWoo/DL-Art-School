@@ -172,7 +172,7 @@ dataloaders:
 
 networks:
   generator:
-    type: generator 
+    type: generator
     which_model_G: dvae_representation_learner
     save_freeze: true
     kwargs:
@@ -204,7 +204,7 @@ networks:
         norm_type: batch_norm
         dist_type: euclidean
         dynamic_ema_decay: true
-      reconstructor: 
+      reconstructor:
         class_name: 'model.audio.module.lucidrains_enc_dec.LucidrainsDecoder'
         num_layers: 2
         num_resnet_blocks: 1
@@ -236,13 +236,13 @@ steps:
     training: generator
     clip_grad_eps: 1.0
     check_abnorm_grads: true
-    optimizer_params: 
+    optimizer_params:
       lr: !!float 3e-5
       weight_decay: 0.008
       beta1: 0.9
       beta2: 0.9999
       eps: !!float 1e-08
-    injectors: 
+    injectors:
       to_mel:
         type: canonical_torch_mel_spectrogram
         mel_norm_file: !join [*save_dir, "/", *stat_key, "_stat_", *stat_batches, ".pt"]
@@ -259,11 +259,11 @@ steps:
 
       gen_inj_train:
         train: true
-        type: generator 
+        type: generator
         generator: generator
         in: [actual_mel]
         out: [recon_loss, commitment_loss, residual_loss, extract_loss, noise_loss, entropy_loss, consistency_loss, tgt, gen, codes] #
-        
+
     losses:
       recon:
         type: direct
@@ -280,11 +280,11 @@ steps:
       # consistency:
       #    type: direct
       #    weight: 0.1
-      #    key: consistency_loss  
+      #    key: consistency_loss
 
 
 train:
-  niter: 50000000 
+  niter: 50000000
   warmup_iter: 1000
   mega_batch_factor: 1    # <-- Gradient accumulation factor. If you are running OOM, increase this to [2,4,8].
   val_freq: 4000

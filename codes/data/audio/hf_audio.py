@@ -64,9 +64,10 @@ class HuggingfaceAudioDataset(AudioABCDataset):
             dataset_dict = load_dataset(store_type, data_files=data_files, cache_dir=cache_dir, num_proc=64)
             dataset = dataset_dict[phase]
 
+        self.name = opt_get(opt, ["name"], None)
         end_time = time.time()
         self.logger = get_root_logger()
-        self.logger.info(f"load {phase} dataset time: {end_time - start_time}")
+        self.logger.info(f"load {self.name} {phase} dataset time: {end_time - start_time}")
 
         dataset.set_format("np")
         # filtered min duration
@@ -100,6 +101,9 @@ class HuggingfaceAudioDataset(AudioABCDataset):
             frame_length=frame_lengths,
             sample_frame_length=np.clip(frame_lengths, 0, sample_frame_length),
         )
+        import pdb
+
+        pdb.set_trace()
 
         self.dataset = dataset
         self.dataset_len = len(self.files)
@@ -229,12 +233,6 @@ class HuggingfaceAudioDataset(AudioABCDataset):
     def get_item(self, item):
         index = self.get_index_offset(item)
         return self.get_audio_chunk(index, item)
-
-    def create_dummy_input(self, batch_size, bucket_boundary):
-        dummy_input = torch.randn(batch_size, self.feature_dim, bucket_boundary).to(torch.bfloat16)
-        dummy_length = torch.randint(bucket_boundary // 2, bucket_boundary, (batch_size,))
-        dummy_length[-1] = bucket_boundary
-        return dict(mel=dummy_input, mel_lengths=dummy_length)
 
 
 @DATASETS.register_module()

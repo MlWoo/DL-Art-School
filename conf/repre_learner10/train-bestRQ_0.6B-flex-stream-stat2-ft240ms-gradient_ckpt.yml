@@ -99,7 +99,7 @@ dataloaders:
           store_type: parquet #json
           data_file:
             - /data0/shoppal/wumenglin/data/hf/librilight-webdataset/*.parquet
-          read_keys: 
+          read_keys:
             - 'audio'
             - 'audio_lengths'
           cache_dir: /home/wumenglin/.cache/hf/librilight-webdataset
@@ -107,7 +107,7 @@ dataloaders:
           mode: HuggingfaceAudioDataset
           store_type: parquet #json
           data_file: /home/wumenglin/repo-dev/dl-art-school/codes/scripts/peoples_speech/dirty/train*
-          read_keys: 
+          read_keys:
             - 'audio'
             - 'audio_lengths'
           cache_dir: /home/wumenglin/cache/peoples_speech/dirty

@@ -274,7 +274,7 @@ class RandomProjectionQuantizer(nn.Module):
     def __init__(
         self,
         input_feature_size,
-        reduction_factors,
+        reduction_factor,
         codebook_size=8192,
         codebook_dim=16,
     ):
@@ -282,7 +282,7 @@ class RandomProjectionQuantizer(nn.Module):
         # should normalize input feature first
         # print("Input feature should be normalized firstly before using RandomProjectionQuantizer")
 
-        P_init = torch.empty((input_feature_size * reduction_factors, codebook_dim))
+        P_init = torch.empty((input_feature_size * reduction_factor, codebook_dim))
         self.register_buffer("project_mat", nn.init.xavier_uniform_(P_init))
 
         codebook_weight_norm = F.normalize(torch.randn(codebook_size, codebook_dim), p=2.0, dim=-1)
@@ -513,7 +513,7 @@ class JukeboxQuantize(nn.Module):
             if self.dead_update_type == "confidence":
                 codebook_rand = torch.zeros_like(self.codebook).to(y.dtype)
                 num_dead_codes = (self.codebook_cluster_size < self.min_threshold).sum()
-                dead_index = torch.where(usage_mask == False)[0]
+                dead_index = torch.where(~usage_mask)[0]
                 if distributed.is_initialized() and distributed.get_world_size() > 1:
                     _, selected_indice = torch.topk(distances, num_dead_codes)
                     selected_codebook = torch.index_select(y, 0, selected_indice)
